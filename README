@@ -1,76 +1,91 @@
-# Binance Futures Scalping Bot
+# Scalping Bot for Binance Futures
 
-A Python-based automated trading bot for Binance Futures that implements a 1-minute scalping strategy for cryptocurrency trading.
+An automated Python-based trading bot for Binance Futures that implements a 1-minute scalping strategy for cryptocurrency trading.
 
 ## Features
 
-- Scalping strategy using Heikin Ashi candles, MACD, and moving averages
-- Configurable trading parameters via YAML file
+- Scalping strategy using Heikin Ashi candles, MACD and moving averages
+- Configurable trading parameters via JSON file
 - Support for multiple trading pairs on Binance Futures
 - Real-time position monitoring and management
 - Trade history tracking and reporting
 - Optional filters for volatility, time, and trend direction
-- Backtesting mode for strategy testing
+- Backtesting mode to test the strategy
 
 ## Installation
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/binance-futures-scalping-bot.git
-cd binance-futures-scalping-bot
+git clone https://github.com/Foxnet360/scalpingbot.git
+cd scalpingbot
 ```
 
-2. Install required packages:
+2. Install the required packages:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Create a `requirements.txt` file with the following dependencies:
+3. The `requirements.txt` file contains the following dependencies:
 ```
 python-binance>=1.0.16
 pandas>=1.3.5
 numpy>=1.22.0
 pyyaml>=6.0
-talib-binary>=0.4.24
+ta>=0.10.2
 ```
 
-4. Configure your API credentials and trading parameters in `config.yaml`
+4. Configure your API credentials and trading parameters in `config.json`
 
 ## Usage
 
-1. Edit the `config.yaml` file to set your API credentials and trading parameters
+1. Edit the `config.json` file to set your API credentials and trading parameters
 
 2. Run the bot:
 ```bash
 python trading_bot.py
 ```
 
-3. Alternatively, specify a different config file:
+3. Alternatively, specify a different configuration file:
 ```bash
-python trading_bot.py custom_config.yaml
+python trading_bot.py custom_config.json
 ```
 
 ## Configuration
 
-The `config.yaml` file contains all the configurable parameters for the bot:
+The `config.json` file contains all configurable parameters for the bot:
 
-- **API Credentials**: Your Binance API key and secret
-- **Trading Parameters**: Symbol, timeframe, leverage, and position size
-- **Strategy Parameters**: Stop-loss, take-profit, and indicator settings
-- **Filters**: Optional filters to improve trade quality
-- **Application Settings**: Check interval and backtest mode toggle
+```json
+{
+    "api_key": "your_api_key",
+    "api_secret": "your_api_secret",
+    "symbol": "STXUSDT",
+    "leverage": 5,
+    "stop_loss_percent": 1,
+    "take_profit_min": 2,
+    "take_profit_max": 3,
+    "position_size_percent": 50,
+    "sma_period": 200,
+    "use_heikin_ashi": true,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "use_volatility_filter": true,
+    "atr_period": 14,
+    "atr_multiplier": 2.0
+}
+```
 
 ## Trading Strategy
 
 This bot implements a 1-minute scalping strategy with the following components:
 
 - **Entry Conditions**:
-  - **Long**: Price above 200 SMA + MACD bullish crossover + green Heikin Ashi candle
-  - **Short**: Price below 200 SMA + MACD bearish crossover + red Heikin Ashi candle
+  - **Long**: Price above SMA 200 + MACD bullish crossover + green Heikin Ashi candle
+  - **Short**: Price below SMA 200 + MACD bearish crossover + red Heikin Ashi candle
 
 - **Exit Conditions**:
-  - Stop-loss: 0.18% from entry price
-  - Take-profit: 0.2% to 0.25% from entry price
+  - Stop-loss: 1% from entry price
+  - Take-profit: 2% to 3% from entry price
 
 - **Risk Management**:
   - Configurable leverage (default: 5x)
