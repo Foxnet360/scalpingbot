@@ -1,0 +1,86 @@
+# Binance Futures Scalping Bot
+
+A Python-based automated trading bot for Binance Futures that implements a 1-minute scalping strategy for cryptocurrency trading.
+
+## Features
+
+- Scalping strategy using Heikin Ashi candles, MACD, and moving averages
+- Configurable trading parameters via YAML file
+- Support for multiple trading pairs on Binance Futures
+- Real-time position monitoring and management
+- Trade history tracking and reporting
+- Optional filters for volatility, time, and trend direction
+- Backtesting mode for strategy testing
+
+## Installation
+
+1. Clone this repository:
+```bash
+git clone https://github.com/yourusername/binance-futures-scalping-bot.git
+cd binance-futures-scalping-bot
+```
+
+2. Install required packages:
+```bash
+pip install -r requirements.txt
+```
+
+3. Create a `requirements.txt` file with the following dependencies:
+```
+python-binance>=1.0.16
+pandas>=1.3.5
+numpy>=1.22.0
+pyyaml>=6.0
+talib-binary>=0.4.24
+```
+
+4. Configure your API credentials and trading parameters in `config.yaml`
+
+## Usage
+
+1. Edit the `config.yaml` file to set your API credentials and trading parameters
+
+2. Run the bot:
+```bash
+python trading_bot.py
+```
+
+3. Alternatively, specify a different config file:
+```bash
+python trading_bot.py custom_config.yaml
+```
+
+## Configuration
+
+The `config.yaml` file contains all the configurable parameters for the bot:
+
+- **API Credentials**: Your Binance API key and secret
+- **Trading Parameters**: Symbol, timeframe, leverage, and position size
+- **Strategy Parameters**: Stop-loss, take-profit, and indicator settings
+- **Filters**: Optional filters to improve trade quality
+- **Application Settings**: Check interval and backtest mode toggle
+
+## Trading Strategy
+
+This bot implements a 1-minute scalping strategy with the following components:
+
+- **Entry Conditions**:
+  - **Long**: Price above 200 SMA + MACD bullish crossover + green Heikin Ashi candle
+  - **Short**: Price below 200 SMA + MACD bearish crossover + red Heikin Ashi candle
+
+- **Exit Conditions**:
+  - Stop-loss: 0.18% from entry price
+  - Take-profit: 0.2% to 0.25% from entry price
+
+- **Risk Management**:
+  - Configurable leverage (default: 5x)
+  - Position size control
+  - Optional volatility filter to avoid extreme market conditions
+
+## Risk Warning
+
+This software is for educational purposes only. Cryptocurrency trading involves significant risk and you can lose money. Use this bot at your own risk.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

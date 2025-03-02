@@ -1,0 +1,21 @@
+# Archivos de configuración con credenciales
+config.json
+
+# Archivos de log
+*.log
+
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+
+# Archivos de datos generados
+data/
+
+# Otros archivos temporales
+.DS_Store
