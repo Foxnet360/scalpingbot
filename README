@@ -38,7 +38,7 @@ ta>=0.10.2
 
 ## Usage
 
-1. Edit the `config.json` file to set your API credentials and trading parameters
+1. Edit the `config.json` file to set your API credentials and trading parameters. Make sure to adjust the `atr_multiplier` based on your trading strategy.
 
 2. Run the bot:
 ```bash
@@ -60,9 +60,9 @@ The `config.json` file contains all configurable parameters for the bot:
     "api_secret": "your_api_secret",
     "symbol": "STXUSDT",
     "leverage": 5,
-    "stop_loss_percent": 1,
-    "take_profit_min": 2,
-    "take_profit_max": 3,
+    "stop_loss_percent": 2,
+    "take_profit_min": 1,
+    "take_profit_max": 2,
     "position_size_percent": 50,
     "sma_period": 200,
     "use_heikin_ashi": true,
@@ -71,7 +71,8 @@ The `config.json` file contains all configurable parameters for the bot:
     "macd_signal": 9,
     "use_volatility_filter": true,
     "atr_period": 14,
-    "atr_multiplier": 2.0
+    "atr_multiplier": 2.0,
+    "timeframe": "1m"
 }
 ```
 
@@ -99,3 +100,17 @@ This software is for educational purposes only. Cryptocurrency trading involves 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## How to Use
+
+1. **Set Up Your Environment**: Ensure you have Python installed and the required packages from `requirements.txt`.
+
+2. **Configure Your API**: Obtain your Binance API key and secret, and enter them in the `config.json` file.
+
+3. **Adjust Trading Parameters**: Modify the trading parameters in `config.json` to suit your trading strategy, including the `atr_multiplier` for setting your Stop Loss and Take Profit levels based on market volatility.
+
+4. **Run the Bot**: Execute the bot using the command line. Monitor the console for logs and updates on trades, including entry prices, Stop Loss, and Take Profit levels.
+
+5. **Monitor Performance**: Keep an eye on the bot's performance and adjust parameters as necessary based on market conditions.
+
+6. **Backtest**: Use the backtesting mode to test your strategy with historical data before trading with real funds.

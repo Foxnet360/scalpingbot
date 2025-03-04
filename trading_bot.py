@@ -145,9 +145,9 @@ class BinanceFuturesBot:
             logger.error(f"Error loading configuration: {e}")
             # Create a default config
             self.config = {
-                'api_key': '',
-                'api_secret': '',
-                'symbol': 'ETHUSDT',
+                'api_key': 'tu_api_key',
+                'api_secret': 'tu_api_secret',
+                'symbol': 'STXUSDT',
                 'leverage': 5,
                 'stop_loss_percent': 2,
                 'take_profit_min': 1,
@@ -330,7 +330,6 @@ class BinanceFuturesBot:
                 if position['symbol'] == self.config['symbol']:
                     position_size = float(position['positionAmt'])
                     entry_price = float(position['entryPrice'])
-                    # Usar el leverage configurado si no está disponible en la posición
                     leverage = float(position.get('leverage', self.config['leverage']))
                     unrealized_pnl = float(position['unRealizedProfit'])
                     mark_price = float(position.get('markPrice', 0))
@@ -354,7 +353,7 @@ class BinanceFuturesBot:
                 'side': 'NONE',
                 'entry_price': 0,
                 'mark_price': 0,
-                'leverage': self.config['leverage'],  # Usar el leverage configurado
+                'leverage': self.config['leverage'],
                 'unrealized_pnl': 0,
                 'pnl_percent': 0
             }
@@ -369,7 +368,7 @@ class BinanceFuturesBot:
                 'side': 'NONE',
                 'entry_price': 0,
                 'mark_price': 0,
-                'leverage': self.config['leverage'],  # Usar el leverage configurado
+                'leverage': self.config['leverage'],
                 'unrealized_pnl': 0,
                 'pnl_percent': 0
             }
@@ -430,116 +429,101 @@ class BinanceFuturesBot:
             logger.error(f"Error placing order: {e}")
             return None
     
+    def get_price_precision(self, symbol):
+        exchange_info = self.client.futures_exchange_info()
+        symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == symbol), None)
+        
+        if symbol_info:
+            for filter in symbol_info['filters']:
+                if filter['filterType'] == 'PRICE_FILTER':
+                    tick_size = float(filter['tickSize'])
+                    price_precision = len(str(tick_size).rstrip('0').split('.')[1]) if '.' in str(tick_size) else 0
+                    return price_precision
+        return 2  # Valor por defecto si no se encuentra información
+    
     def place_take_profit_order(self, side, quantity, entry_price):
-        """Place a take profit order based on ROI percentage"""
+        """Place a take profit order based on ATR"""
         try:
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
-            # Get position information
-            position = self.get_position_info()
-            position_value = abs(position['position_size'] * entry_price)
-            leverage = position['leverage']
+            # Asegúrate de que entry_price no sea 0
+            if entry_price <= 0:
+                logger.error("Entry price is invalid (0 or negative). Cannot place TP order.")
+                return None
             
-            # Select appropriate TP percentage based on side
-            tp_percent = self.config['take_profit_max'] if side == "BUY" else self.config['take_profit_min']
+            # Calcular ATR para el mercado actual
+            atr_value = TechnicalIndicators.atr(self.get_historical_data(limit=100), self.config['atr_period']).iloc[-1]
             
-            # Calculate target profit in USDT
-            target_profit_usdt = position_value * (tp_percent/100) / leverage
+            # Calcular el precio de TP
+            tp_price = entry_price + (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price - (atr_value * self.config['atr_multiplier'])
             
-            # Calculate take profit price based on ROI
-            if side == "BUY":
-                # For LONG positions
-                price_change = target_profit_usdt / position['position_size']
-                tp_price = entry_price + price_change
-            else:
-                # For SHORT positions
-                price_change = target_profit_usdt / abs(position['position_size'])
-                tp_price = entry_price - price_change
+            # Obtener la precisión del precio
+            price_precision = self.get_price_precision(self.config['symbol'])
             
-            # Get price precision for the symbol
-            exchange_info = self.client.futures_exchange_info()
-            symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
-            price_precision = 2  # Default value
-            
-            if symbol_info:
-                for filter in symbol_info['filters']:
-                    if filter['filterType'] == 'PRICE_FILTER':
-                        tick_size = float(filter['tickSize'])
-                        price_precision = len(str(tick_size).rstrip('0').split('.')[1]) if '.' in str(tick_size) else 0
-                        break
-            
+            # Redondear el precio de TP
             tp_price = round(tp_price, price_precision)
             
-            # Detailed log for debugging
-            logger.warning(f"Setting TP: Entry={entry_price}, TP={tp_price}, ROI={tp_percent}%, Side={side}")
+            # Asegúrate de que tp_price sea válido
+            if tp_price <= 0:
+                logger.error("Calculated TP price is invalid (0 or negative). Cannot place TP order.")
+                return None
             
+            # Crear la orden de TP
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="TAKE_PROFIT_MARKET",  # Changed to TAKE_PROFIT_MARKET for better reliability
+                type="TAKE_PROFIT_MARKET",
                 quantity=quantity,
                 stopPrice=tp_price,
                 workingType="MARK_PRICE",
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed take profit order at {tp_price} (ROI: +{tp_percent}%)")
+            logger.warning(f"Placed take profit order at {tp_price}")
             return order
         except Exception as e:
             logger.error(f"Error placing take profit order: {str(e)}")
             return None
     
     def place_stop_loss_order(self, side, quantity, entry_price):
-        """Place a stop loss order based on ROI percentage"""
+        """Place a stop loss order based on ATR"""
         try:
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
-            # Get position information
-            position = self.get_position_info()
-            position_value = abs(position['position_size'] * entry_price)
-            leverage = position['leverage']
+            # Asegúrate de que entry_price no sea 0
+            if entry_price <= 0:
+                logger.error("Entry price is invalid (0 or negative). Cannot place SL order.")
+                return None
             
-            # Calculate maximum allowed loss in USDT
-            max_loss_usdt = position_value * (self.config['stop_loss_percent']/100) / leverage
+            # Calcular ATR para el mercado actual
+            atr_value = TechnicalIndicators.atr(self.get_historical_data(limit=100), self.config['atr_period']).iloc[-1]
             
-            # Calculate stop loss price based on ROI
-            if side == "BUY":
-                # For LONG positions
-                price_change = max_loss_usdt / position['position_size']
-                sl_price = entry_price - price_change
-            else:
-                # For SHORT positions
-                price_change = max_loss_usdt / abs(position['position_size'])
-                sl_price = entry_price + price_change
+            # Calcular el precio de SL
+            sl_price = entry_price - (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price + (atr_value * self.config['atr_multiplier'])
             
-            # Get price precision for the symbol
-            exchange_info = self.client.futures_exchange_info()
-            symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
-            price_precision = 2  # Default value
+            # Obtener la precisión del precio
+            price_precision = self.get_price_precision(self.config['symbol'])
             
-            if symbol_info:
-                for filter in symbol_info['filters']:
-                    if filter['filterType'] == 'PRICE_FILTER':
-                        tick_size = float(filter['tickSize'])
-                        price_precision = len(str(tick_size).rstrip('0').split('.')[1]) if '.' in str(tick_size) else 0
-                        break
-            
+            # Redondear el precio de SL
             sl_price = round(sl_price, price_precision)
             
-            # Detailed log for debugging
-            logger.warning(f"Setting SL: Entry={entry_price}, SL={sl_price}, ROI={self.config['stop_loss_percent']}%, Side={side}")
+            # Asegúrate de que sl_price sea válido
+            if sl_price <= 0:
+                logger.error("Calculated SL price is invalid (0 or negative). Cannot place SL order.")
+                return None
             
+            # Crear la orden de SL
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="STOP_MARKET",  # Changed to STOP_MARKET for better reliability
+                type="STOP_MARKET",
                 quantity=quantity,
                 stopPrice=sl_price,
                 workingType="MARK_PRICE",
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed stop loss order at {sl_price} (ROI: -{self.config['stop_loss_percent']}%)")
+            logger.warning(f"Placed stop loss order at {sl_price}")
             return order
         except Exception as e:
             logger.error(f"Error placing stop loss order: {str(e)}")
@@ -583,20 +567,29 @@ class BinanceFuturesBot:
                 # Open long position
                 order = self.place_order("BUY", quantity)
                 if order:
-                    # Place take profit and stop loss immediately after entry
-                    entry_price = float(order['avgPrice']) if 'avgPrice' in order else float(latest['close'])
+                    # Captura el precio de entrada
+                    entry_price = float(order['avgFillPrice']) if 'avgFillPrice' in order else float(latest['close'])
                     logger.warning(f"Placing TP and SL orders for LONG position at entry price: {entry_price}")
+                    
+                    # Verifica que el precio de entrada sea válido
+                    if entry_price <= 0:
+                        logger.error("Entry price is invalid (0 or negative). Cannot place TP or SL orders.")
+                        return
+                    
                     tp_order = self.place_take_profit_order("BUY", quantity, entry_price)
                     sl_order = self.place_stop_loss_order("BUY", quantity, entry_price)
+                    
+                    # Display prices in console
+                    logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
                     
                     # Verify that orders were placed correctly
                     if tp_order and sl_order:
                         logger.warning(f"Successfully placed TP and SL orders for LONG position")
                     else:
                         logger.error(f"Failed to place TP or SL orders for LONG position")
-                
+            
             elif short_signal:
-                logger.info("🔴 SHORT Entry Signal detected")
+                logger.info("🟡 SHORT Entry Signal detected")
                 quantity = self.calculate_position_size()
                 
                 # Open short position
@@ -607,6 +600,9 @@ class BinanceFuturesBot:
                     logger.warning(f"Placing TP and SL orders for SHORT position at entry price: {entry_price}")
                     tp_order = self.place_take_profit_order("SELL", quantity, entry_price)
                     sl_order = self.place_stop_loss_order("SELL", quantity, entry_price)
+                    
+                    # Display prices in console
+                    logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
                     
                     # Verify that orders were placed correctly
                     if tp_order and sl_order:
@@ -637,7 +633,7 @@ class BinanceFuturesBot:
                 os.system('cls' if os.name == 'nt' else 'clear')
                 
                 # Show header
-                print(f"\n===== BINANCE FUTURES TRADING BOT =====")
+                print(f"\n===== BINANCE FUTURES SCALPING BOT =====")
                 print(f"Symbol: {self.config['symbol']} | Timeframe: {self.config.get('timeframe', '1m')}")
                 print(f"Leverage: {self.config['leverage']}x | Position Size: {self.config['position_size_percent']}%")
                 print(f"Stop Loss: {self.config['stop_loss_percent']}% | Take Profit: {self.config['take_profit_min']}-{self.config['take_profit_max']}%")
@@ -662,9 +658,9 @@ if __name__ == "__main__":
     # Create default config file if it doesn't exist
     if not os.path.exists('config.json'):
         default_config = {
-            'api_key': 'YOUR_API_KEY',
-            'api_secret': 'YOUR_API_SECRET',
-            'symbol': 'ETHUSDT',
+            'api_key': 'tu_api_key',
+            'api_secret': 'tu_api_secret',
+            'symbol': 'STXUSDT',
             'leverage': 5,
             'stop_loss_percent': 2,
             'take_profit_min': 1,
@@ -689,7 +685,7 @@ if __name__ == "__main__":
     with open('config.json', 'r') as f:
         config = json.load(f)
     
-    if config['api_key'] == 'YOUR_API_KEY' or config['api_secret'] == 'YOUR_API_SECRET':
+    if config['api_key'] == 'tu_api_key' and config['api_secret'] == 'tu_api_secret':
         print("Please edit config.json with your Binance API keys before running.")
         exit(0)
     
