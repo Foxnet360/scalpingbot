@@ -446,29 +446,29 @@ class BinanceFuturesBot:
         try:
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
-            # Asegúrate de que entry_price no sea 0
+            # Ensure entry_price is valid
             if entry_price <= 0:
                 logger.error("Entry price is invalid (0 or negative). Cannot place TP order.")
                 return None
             
-            # Calcular ATR para el mercado actual
+            # Calculate ATR for the current market
             atr_value = TechnicalIndicators.atr(self.get_historical_data(limit=100), self.config['atr_period']).iloc[-1]
             
-            # Calcular el precio de TP
+            # Calculate the TP price
             tp_price = entry_price + (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price - (atr_value * self.config['atr_multiplier'])
             
-            # Obtener la precisión del precio
+            # Get the price precision
             price_precision = self.get_price_precision(self.config['symbol'])
             
-            # Redondear el precio de TP
+            # Round the TP price to the correct precision
             tp_price = round(tp_price, price_precision)
             
-            # Asegúrate de que tp_price sea válido
+            # Ensure the tp_price is valid
             if tp_price <= 0:
                 logger.error("Calculated TP price is invalid (0 or negative). Cannot place TP order.")
                 return None
             
-            # Crear la orden de TP
+            # Create the TP order
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
