@@ -1,0 +1,2 @@
+    "api_key": "IpPHudUxuBBgc5IyWm2gfHJTrzXEU43LZtWRFIkd3uySa4rChf94QpeUNySF0rKe",
+    "api_secret": "9zQwEdvK3qBp8wJ6owtcGbTLeN4qPtQVRCFTYkJPaCz3fIwnqGrTY1pzdeWGAF8N"

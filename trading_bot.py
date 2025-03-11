@@ -125,11 +125,11 @@ class BinanceFuturesBot:
                 
             # Set defaults for any missing config values
             self.config.setdefault('symbol', 'STXUSDT')
-            self.config.setdefault('leverage', 5)
-            self.config.setdefault('stop_loss_percent', 2)
-            self.config.setdefault('take_profit_min', 1)
-            self.config.setdefault('take_profit_max', 2)
-            self.config.setdefault('position_size_percent', 50)  # % of available balance
+            self.config.setdefault('leverage', 10)
+            self.config.setdefault('stop_loss_percent', 1)
+            self.config.setdefault('take_profit_min', 2)
+            self.config.setdefault('take_profit_max', 3)
+            self.config.setdefault('position_size_percent', 100)  # % of available balance
             self.config.setdefault('sma_period', 200)
             self.config.setdefault('use_heikin_ashi', True)
             self.config.setdefault('macd_fast', 12)
@@ -137,7 +137,8 @@ class BinanceFuturesBot:
             self.config.setdefault('macd_signal', 9)
             self.config.setdefault('use_volatility_filter', True)
             self.config.setdefault('atr_period', 14)
-            self.config.setdefault('atr_multiplier', 2.0)
+            self.config.setdefault('atr_multiplier', 1.0)
+            self.config.setdefault('tp_atr_multiplier', 2.0)
             self.config.setdefault('timeframe', '1m')  # Añadir timeframe por defecto
             
             logger.info("Configuration loaded successfully")
@@ -148,11 +149,11 @@ class BinanceFuturesBot:
                 'api_key': 'tu_api_key',
                 'api_secret': 'tu_api_secret',
                 'symbol': 'STXUSDT',
-                'leverage': 5,
-                'stop_loss_percent': 2,
-                'take_profit_min': 1,
-                'take_profit_max': 2,
-                'position_size_percent': 50,
+                'leverage': 10,
+                'stop_loss_percent': 1,
+                'take_profit_min': 2,
+                'take_profit_max': 3,
+                'position_size_percent': 100,
                 'sma_period': 200,
                 'use_heikin_ashi': True,
                 'macd_fast': 12,
@@ -160,7 +161,8 @@ class BinanceFuturesBot:
                 'macd_signal': 9,
                 'use_volatility_filter': True,
                 'atr_period': 14,
-                'atr_multiplier': 2.0,
+                'atr_multiplier': 1.0,
+                'tp_atr_multiplier': 2.0,
                 'timeframe': '1m'  # Añadir timeframe por defecto
             }
             # Save the default config
@@ -454,8 +456,12 @@ class BinanceFuturesBot:
             # Calculate ATR for the current market
             atr_value = TechnicalIndicators.atr(self.get_historical_data(limit=100), self.config['atr_period']).iloc[-1]
             
+            # Usar un multiplicador específico para TP que sea mayor que el de SL para mejorar la relación riesgo/recompensa
+            # Si no está definido, usar 1.5 veces el multiplicador de ATR estándar
+            tp_multiplier = self.config.get('tp_atr_multiplier', self.config['atr_multiplier'] * 1.5)
+            
             # Calculate the TP price
-            tp_price = entry_price + (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price - (atr_value * self.config['atr_multiplier'])
+            tp_price = entry_price + (atr_value * tp_multiplier) if side == "BUY" else entry_price - (atr_value * tp_multiplier)
             
             # Get the price precision
             price_precision = self.get_price_precision(self.config['symbol'])
@@ -468,6 +474,23 @@ class BinanceFuturesBot:
                 logger.error("Calculated TP price is invalid (0 or negative). Cannot place TP order.")
                 return None
             
+            # Calcular la relación riesgo/recompensa
+            sl_price = entry_price - (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price + (atr_value * self.config['atr_multiplier'])
+            
+            if side == "BUY":
+                risk = entry_price - sl_price
+                reward = tp_price - entry_price
+            else:
+                risk = sl_price - entry_price
+                reward = entry_price - tp_price
+                
+            risk_reward_ratio = reward / risk if risk > 0 else 0
+            
+            # Log the details for debugging
+            logger.info(f"Attempting to place TP order: Side={opposite_side}, Quantity={quantity}, StopPrice={tp_price}, Entry Price={entry_price}")
+            logger.info(f"TP Distance: {abs(tp_price - entry_price):.4f} ({abs(tp_price/entry_price - 1) * 100:.2f}%)")
+            logger.info(f"Risk/Reward Ratio: {risk_reward_ratio:.2f}")
+            
             # Create the TP order
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
@@ -479,10 +502,45 @@ class BinanceFuturesBot:
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed take profit order at {tp_price}")
+            logger.warning(f"Placed take profit order at {tp_price} (R/R: {risk_reward_ratio:.2f})")
             return order
         except Exception as e:
             logger.error(f"Error placing take profit order: {str(e)}")
+            # Try with a different precision if the error is related to precision
+            if "Precision is over the maximum" in str(e):
+                try:
+                    # Get exchange info to find the correct precision
+                    exchange_info = self.client.futures_exchange_info()
+                    symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
+                    
+                    if symbol_info:
+                        # Find the price filter
+                        price_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'), None)
+                        if price_filter:
+                            tick_size = float(price_filter['tickSize'])
+                            # Calculate the correct precision
+                            correct_precision = len(str(tick_size).rstrip('0').split('.')[1]) if '.' in str(tick_size) else 0
+                            
+                            # Round the TP price to the correct precision
+                            tp_price = round(tp_price, correct_precision)
+                            
+                            logger.info(f"Retrying TP order with corrected precision: {correct_precision}, Price: {tp_price}")
+                            
+                            # Create the TP order with corrected precision
+                            order = self.client.futures_create_order(
+                                symbol=self.config['symbol'],
+                                side=opposite_side,
+                                type="TAKE_PROFIT_MARKET",
+                                quantity=quantity,
+                                stopPrice=tp_price,
+                                workingType="MARK_PRICE",
+                                reduceOnly=True
+                            )
+                            
+                            logger.warning(f"Placed take profit order at {tp_price} with corrected precision")
+                            return order
+                except Exception as retry_error:
+                    logger.error(f"Error retrying take profit order with corrected precision: {str(retry_error)}")
             return None
     
     def place_stop_loss_order(self, side, quantity, entry_price):
@@ -512,6 +570,9 @@ class BinanceFuturesBot:
                 logger.error("Calculated SL price is invalid (0 or negative). Cannot place SL order.")
                 return None
             
+            # Log the details for debugging
+            logger.info(f"Attempting to place SL order: Side={opposite_side}, Quantity={quantity}, StopPrice={sl_price}, Entry Price={entry_price}")
+            
             # Crear la orden de SL
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
@@ -527,10 +588,268 @@ class BinanceFuturesBot:
             return order
         except Exception as e:
             logger.error(f"Error placing stop loss order: {str(e)}")
+            # Try with a different precision if the error is related to precision
+            if "Precision is over the maximum" in str(e):
+                try:
+                    # Get exchange info to find the correct precision
+                    exchange_info = self.client.futures_exchange_info()
+                    symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
+                    
+                    if symbol_info:
+                        # Find the price filter
+                        price_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'), None)
+                        if price_filter:
+                            tick_size = float(price_filter['tickSize'])
+                            # Calculate the correct precision
+                            correct_precision = len(str(tick_size).rstrip('0').split('.')[1]) if '.' in str(tick_size) else 0
+                            
+                            # Round the SL price to the correct precision
+                            sl_price = round(sl_price, correct_precision)
+                            
+                            logger.info(f"Retrying SL order with corrected precision: {correct_precision}, Price: {sl_price}")
+                            
+                            # Create the SL order with corrected precision
+                            order = self.client.futures_create_order(
+                                symbol=self.config['symbol'],
+                                side=opposite_side,
+                                type="STOP_MARKET",
+                                quantity=quantity,
+                                stopPrice=sl_price,
+                                workingType="MARK_PRICE",
+                                reduceOnly=True
+                            )
+                            
+                            logger.warning(f"Placed stop loss order at {sl_price} with corrected precision")
+                            return order
+                except Exception as retry_error:
+                    logger.error(f"Error retrying stop loss order with corrected precision: {str(retry_error)}")
             return None
+    
+    def track_trade_history(self, entry_order, tp_order, sl_order, side, quantity, entry_price):
+        """Registra información sobre la operación actual para seguimiento"""
+        trade_info = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'symbol': self.config['symbol'],
+            'side': side,
+            'quantity': quantity,
+            'entry_price': entry_price,
+            'tp_price': tp_order['stopPrice'] if tp_order else None,
+            'sl_price': sl_order['stopPrice'] if sl_order else None,
+            'leverage': self.config['leverage'],
+            'status': 'OPEN',
+            'exit_price': None,
+            'pnl': None,
+            'pnl_percent': None,
+            'duration': None,
+            'exit_reason': None
+        }
+        
+        # Guardar en archivo JSON
+        trade_history_file = 'trade_history.json'
+        try:
+            if os.path.exists(trade_history_file):
+                with open(trade_history_file, 'r') as f:
+                    trade_history = json.load(f)
+            else:
+                trade_history = []
+            
+            trade_history.append(trade_info)
+            
+            with open(trade_history_file, 'w') as f:
+                json.dump(trade_history, f, indent=4)
+                
+            logger.info(f"Trade registrado: {side} {quantity} {self.config['symbol']} a {entry_price}")
+        except Exception as e:
+            logger.error(f"Error al registrar trade: {e}")
+        
+        return trade_info
+    
+    def check_closed_positions(self):
+        """Verifica si alguna posición se ha cerrado y actualiza el historial de trades"""
+        # Obtener historial de órdenes recientes
+        try:
+            # Verificar si tenemos una posición abierta
+            position = self.get_position_info()
+            
+            # Cargar historial de trades
+            trade_history_file = 'trade_history.json'
+            if os.path.exists(trade_history_file):
+                with open(trade_history_file, 'r') as f:
+                    trade_history = json.load(f)
+                
+                # Buscar trades abiertos
+                for i, trade in enumerate(trade_history):
+                    if trade['status'] == 'OPEN':
+                        # Si ya no tenemos posición pero el trade está marcado como abierto, significa que se cerró
+                        if position['side'] == 'NONE':
+                            # Obtener historial de órdenes recientes para encontrar la orden de cierre
+                            orders = self.client.futures_get_all_orders(symbol=self.config['symbol'], limit=20)
+                            
+                            # Filtrar órdenes ejecutadas de TP o SL
+                            closed_orders = [order for order in orders if 
+                                            order['status'] == 'FILLED' and 
+                                            (order['type'] == 'TAKE_PROFIT_MARKET' or order['type'] == 'STOP_MARKET')]
+                            
+                            # Ordenar por tiempo de ejecución (más reciente primero)
+                            closed_orders.sort(key=lambda x: x['updateTime'], reverse=True)
+                            
+                            if closed_orders:
+                                # Tomar la orden más reciente que coincida con la dirección del trade
+                                for order in closed_orders:
+                                    # Verificar si esta orden cerró nuestra posición
+                                    if (trade['side'] == 'BUY' and order['side'] == 'SELL') or \
+                                       (trade['side'] == 'SELL' and order['side'] == 'BUY'):
+                                        
+                                        # Obtener precio de salida
+                                        if 'avgPrice' in order:
+                                            exit_price = float(order['avgPrice'])
+                                        else:
+                                            # Si no hay avgPrice, intentar obtener de otras fuentes
+                                            try:
+                                                # Obtener trades recientes para encontrar el precio de salida
+                                                account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
+                                                # Filtrar por orderId
+                                                matching_trades = [t for t in account_trades if t['orderId'] == order['orderId']]
+                                                if matching_trades:
+                                                    exit_price = float(matching_trades[0]['price'])
+                                                else:
+                                                    # Si no se encuentra, usar el precio actual
+                                                    ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
+                                                    exit_price = float(ticker['price'])
+                                                    logger.warning(f"No se pudo obtener precio de salida exacto, usando precio actual: {exit_price}")
+                                            except Exception as e:
+                                                logger.error(f"Error obteniendo precio de salida: {e}")
+                                                # Usar el precio de TP o SL como aproximación
+                                                exit_price = float(trade['tp_price']) if order['type'] == 'TAKE_PROFIT_MARKET' else float(trade['sl_price'])
+                                        
+                                        entry_price = trade['entry_price']
+                                        quantity = trade['quantity']
+                                        
+                                        # Calcular PnL
+                                        if trade['side'] == 'BUY':
+                                            pnl = (exit_price - entry_price) * quantity
+                                            pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
+                                        else:
+                                            pnl = (entry_price - exit_price) * quantity
+                                            pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
+                                        
+                                        # Actualizar trade
+                                        trade_history[i]['status'] = 'CLOSED'
+                                        trade_history[i]['exit_price'] = exit_price
+                                        trade_history[i]['pnl'] = pnl
+                                        trade_history[i]['pnl_percent'] = pnl_percent
+                                        trade_history[i]['exit_reason'] = 'TP' if order['type'] == 'TAKE_PROFIT_MARKET' else 'SL'
+                                        
+                                        # Calcular duración
+                                        start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
+                                        end_time = datetime.now()
+                                        duration = (end_time - start_time).total_seconds() / 60  # en minutos
+                                        trade_history[i]['duration'] = duration
+                                        
+                                        # Guardar actualización
+                                        with open(trade_history_file, 'w') as f:
+                                            json.dump(trade_history, f, indent=4)
+                                        
+                                        # Mostrar resumen de la operación
+                                        result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
+                                        logger.warning(f"\n===== OPERACIÓN CERRADA =====")
+                                        logger.warning(f"Símbolo: {trade['symbol']}")
+                                        logger.warning(f"Dirección: {trade['side']}")
+                                        logger.warning(f"Entrada: {entry_price}")
+                                        logger.warning(f"Salida: {exit_price}")
+                                        logger.warning(f"Cantidad: {quantity}")
+                                        logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                        logger.warning(f"Razón de salida: {trade_history[i]['exit_reason']}")
+                                        logger.warning(f"Duración: {duration:.1f} minutos")
+                                        logger.warning(f"Resultado: {result}")
+                                        logger.warning(f"=============================\n")
+                                        
+                                        # Notificar al usuario
+                                        print(f"\n===== OPERACIÓN CERRADA: {result} =====")
+                                        print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
+                                        print(f"Entrada: {entry_price} | Salida: {exit_price}")
+                                        print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                        print(f"Razón: {trade_history[i]['exit_reason']} | Duración: {duration:.1f} min")
+                                        print("=======================================\n")
+                                        
+                                        break
+                            else:
+                                # Si no se encuentran órdenes de cierre, verificar si la posición se cerró manualmente
+                                logger.warning("No se encontraron órdenes de cierre, verificando si la posición se cerró manualmente")
+                                
+                                try:
+                                    # Obtener trades recientes
+                                    account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
+                                    # Ordenar por tiempo (más reciente primero)
+                                    account_trades.sort(key=lambda x: x['time'], reverse=True)
+                                    
+                                    # Buscar trades que coincidan con la dirección opuesta a nuestra posición
+                                    matching_trades = [t for t in account_trades if 
+                                                      (trade['side'] == 'BUY' and t['side'] == 'SELL') or 
+                                                      (trade['side'] == 'SELL' and t['side'] == 'BUY')]
+                                    
+                                    if matching_trades:
+                                        # Usar el precio del trade más reciente
+                                        exit_price = float(matching_trades[0]['price'])
+                                        entry_price = trade['entry_price']
+                                        quantity = trade['quantity']
+                                        
+                                        # Calcular PnL
+                                        if trade['side'] == 'BUY':
+                                            pnl = (exit_price - entry_price) * quantity
+                                            pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
+                                        else:
+                                            pnl = (entry_price - exit_price) * quantity
+                                            pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
+                                        
+                                        # Actualizar trade
+                                        trade_history[i]['status'] = 'CLOSED'
+                                        trade_history[i]['exit_price'] = exit_price
+                                        trade_history[i]['pnl'] = pnl
+                                        trade_history[i]['pnl_percent'] = pnl_percent
+                                        trade_history[i]['exit_reason'] = 'MANUAL'
+                                        
+                                        # Calcular duración
+                                        start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
+                                        end_time = datetime.now()
+                                        duration = (end_time - start_time).total_seconds() / 60  # en minutos
+                                        trade_history[i]['duration'] = duration
+                                        
+                                        # Guardar actualización
+                                        with open(trade_history_file, 'w') as f:
+                                            json.dump(trade_history, f, indent=4)
+                                        
+                                        # Mostrar resumen de la operación
+                                        result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
+                                        logger.warning(f"\n===== OPERACIÓN CERRADA MANUALMENTE =====")
+                                        logger.warning(f"Símbolo: {trade['symbol']}")
+                                        logger.warning(f"Dirección: {trade['side']}")
+                                        logger.warning(f"Entrada: {entry_price}")
+                                        logger.warning(f"Salida: {exit_price}")
+                                        logger.warning(f"Cantidad: {quantity}")
+                                        logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                        logger.warning(f"Duración: {duration:.1f} minutos")
+                                        logger.warning(f"Resultado: {result}")
+                                        logger.warning(f"=============================\n")
+                                        
+                                        # Notificar al usuario
+                                        print(f"\n===== OPERACIÓN CERRADA MANUALMENTE: {result} =====")
+                                        print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
+                                        print(f"Entrada: {entry_price} | Salida: {exit_price}")
+                                        print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                        print(f"Duración: {duration:.1f} min")
+                                        print("=======================================\n")
+                                except Exception as e:
+                                    logger.error(f"Error verificando cierre manual: {e}")
+                                    
+        except Exception as e:
+            logger.error(f"Error al verificar posiciones cerradas: {e}")
     
     def execute_strategy(self):
         """Execute the trading strategy"""
+        # Verificar si alguna posición se ha cerrado
+        self.check_closed_positions()
+        
         # Get current market data using the configured timeframe
         timeframe = self.config.get('timeframe', '1m')  # Use configured timeframe
         df = self.get_historical_data(interval=timeframe, limit=300)
@@ -555,7 +874,8 @@ class BinanceFuturesBot:
         # Debug information
         logger.info(f"Symbol: {self.config['symbol']} | Price: {latest['close']:.2f} | Position: {position_side} | Timeframe: {timeframe}")
         logger.info(f"Long Signal: {long_signal} | Short Signal: {short_signal}")
-        logger.info(f"SMA200: {latest['sma200']:.2f} | MACD: {latest['macd']:.6f} | Signal: {latest['macd_signal']:.6f}")
+        logger.info(f"SMA200: {latest['sma200']:.4f} | MACD: {latest['macd']:.6f} | Signal: {latest['macd_signal']:.6f}")
+        logger.info(f"ATR: {latest['atr']:.6f} | Volatility OK: {latest['volatility_ok']}")
         
         # Execute trades based on signals
         if position_side == 'NONE':
@@ -567,26 +887,75 @@ class BinanceFuturesBot:
                 # Open long position
                 order = self.place_order("BUY", quantity)
                 if order:
-                    # Captura el precio de entrada
-                    entry_price = float(order['avgFillPrice']) if 'avgFillPrice' in order else float(latest['close'])
+                    logger.info(f"Order response: {order}")  # Log the entire order response for debugging
+                    
+                    # Try to get the entry price from different possible fields in the order response
+                    entry_price = None
+                    if 'avgPrice' in order:
+                        entry_price = float(order['avgPrice'])
+                    elif 'price' in order and float(order['price']) > 0:
+                        entry_price = float(order['price'])
+                    elif 'fills' in order and len(order['fills']) > 0:
+                        # Calculate average price from fills
+                        total_qty = 0
+                        total_price = 0
+                        for fill in order['fills']:
+                            fill_qty = float(fill['qty'])
+                            fill_price = float(fill['price'])
+                            total_qty += fill_qty
+                            total_price += fill_qty * fill_price
+                        if total_qty > 0:
+                            entry_price = total_price / total_qty
+                    
+                    # If we still don't have a valid entry price, use the current market price
+                    if not entry_price or entry_price <= 0:
+                        ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
+                        entry_price = float(ticker['price'])
+                        logger.warning(f"Could not get entry price from order response. Using current market price: {entry_price}")
+                    
                     logger.warning(f"Placing TP and SL orders for LONG position at entry price: {entry_price}")
                     
-                    # Verifica que el precio de entrada sea válido
-                    if entry_price <= 0:
-                        logger.error("Entry price is invalid (0 or negative). Cannot place TP or SL orders.")
-                        return
-                    
-                    tp_order = self.place_take_profit_order("BUY", quantity, entry_price)
-                    sl_order = self.place_stop_loss_order("BUY", quantity, entry_price)
-                    
-                    # Display prices in console
-                    logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
-                    
-                    # Verify that orders were placed correctly
-                    if tp_order and sl_order:
-                        logger.warning(f"Successfully placed TP and SL orders for LONG position")
+                    # Verify that the entry price is valid
+                    if entry_price > 0:
+                        # Place TP order with retry logic
+                        tp_order = None
+                        tp_attempts = 0
+                        while not tp_order and tp_attempts < 3:
+                            tp_order = self.place_take_profit_order("BUY", quantity, entry_price)
+                            if not tp_order:
+                                logger.error(f"Failed to place TP order for LONG position (attempt {tp_attempts + 1}/3).")
+                                tp_attempts += 1
+                                time.sleep(1)  # Wait a bit before retrying
+                        
+                        # Place SL order with retry logic
+                        sl_order = None
+                        sl_attempts = 0
+                        while not sl_order and sl_attempts < 3:
+                            sl_order = self.place_stop_loss_order("BUY", quantity, entry_price)
+                            if not sl_order:
+                                logger.error(f"Failed to place SL order for LONG position (attempt {sl_attempts + 1}/3).")
+                                sl_attempts += 1
+                                time.sleep(1)  # Wait a bit before retrying
+                        
+                        # Display prices in console
+                        logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
+                        
+                        # Registrar la operación
+                        self.track_trade_history(order, tp_order, sl_order, "BUY", quantity, entry_price)
+                        
+                        # Log success or failure
+                        if tp_order and sl_order:
+                            logger.warning("Successfully placed both TP and SL orders for LONG position")
+                        elif tp_order:
+                            logger.warning("Successfully placed TP order but failed to place SL order for LONG position")
+                        elif sl_order:
+                            logger.warning("Successfully placed SL order but failed to place TP order for LONG position")
+                        else:
+                            logger.error("Failed to place both TP and SL orders for LONG position")
                     else:
-                        logger.error(f"Failed to place TP or SL orders for LONG position")
+                        logger.error("Entry price is invalid (0 or negative). Cannot place TP or SL orders.")
+                else:
+                    logger.error("Failed to place LONG order.")
             
             elif short_signal:
                 logger.info("🟡 SHORT Entry Signal detected")
@@ -595,20 +964,75 @@ class BinanceFuturesBot:
                 # Open short position
                 order = self.place_order("SELL", quantity)
                 if order:
-                    # Place take profit and stop loss immediately after entry
-                    entry_price = float(order['avgPrice']) if 'avgPrice' in order else float(latest['close'])
+                    logger.info(f"Order response: {order}")  # Log the entire order response for debugging
+                    
+                    # Try to get the entry price from different possible fields in the order response
+                    entry_price = None
+                    if 'avgPrice' in order:
+                        entry_price = float(order['avgPrice'])
+                    elif 'price' in order and float(order['price']) > 0:
+                        entry_price = float(order['price'])
+                    elif 'fills' in order and len(order['fills']) > 0:
+                        # Calculate average price from fills
+                        total_qty = 0
+                        total_price = 0
+                        for fill in order['fills']:
+                            fill_qty = float(fill['qty'])
+                            fill_price = float(fill['price'])
+                            total_qty += fill_qty
+                            total_price += fill_qty * fill_price
+                        if total_qty > 0:
+                            entry_price = total_price / total_qty
+                    
+                    # If we still don't have a valid entry price, use the current market price
+                    if not entry_price or entry_price <= 0:
+                        ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
+                        entry_price = float(ticker['price'])
+                        logger.warning(f"Could not get entry price from order response. Using current market price: {entry_price}")
+                    
                     logger.warning(f"Placing TP and SL orders for SHORT position at entry price: {entry_price}")
-                    tp_order = self.place_take_profit_order("SELL", quantity, entry_price)
-                    sl_order = self.place_stop_loss_order("SELL", quantity, entry_price)
                     
-                    # Display prices in console
-                    logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
-                    
-                    # Verify that orders were placed correctly
-                    if tp_order and sl_order:
-                        logger.warning(f"Successfully placed TP and SL orders for SHORT position")
+                    # Verify that the entry price is valid
+                    if entry_price > 0:
+                        # Place TP order with retry logic
+                        tp_order = None
+                        tp_attempts = 0
+                        while not tp_order and tp_attempts < 3:
+                            tp_order = self.place_take_profit_order("SELL", quantity, entry_price)
+                            if not tp_order:
+                                logger.error(f"Failed to place TP order for SHORT position (attempt {tp_attempts + 1}/3).")
+                                tp_attempts += 1
+                                time.sleep(1)  # Wait a bit before retrying
+                        
+                        # Place SL order with retry logic
+                        sl_order = None
+                        sl_attempts = 0
+                        while not sl_order and sl_attempts < 3:
+                            sl_order = self.place_stop_loss_order("SELL", quantity, entry_price)
+                            if not sl_order:
+                                logger.error(f"Failed to place SL order for SHORT position (attempt {sl_attempts + 1}/3).")
+                                sl_attempts += 1
+                                time.sleep(1)  # Wait a bit before retrying
+                        
+                        # Display prices in console
+                        logger.info(f"Entry Price: {entry_price}, TP Price: {tp_order['stopPrice'] if tp_order else 'N/A'}, SL Price: {sl_order['stopPrice'] if sl_order else 'N/A'}, Current Price: {latest['close']:.2f}")
+                        
+                        # Registrar la operación
+                        self.track_trade_history(order, tp_order, sl_order, "SELL", quantity, entry_price)
+                        
+                        # Log success or failure
+                        if tp_order and sl_order:
+                            logger.warning("Successfully placed both TP and SL orders for SHORT position")
+                        elif tp_order:
+                            logger.warning("Successfully placed TP order but failed to place SL order for SHORT position")
+                        elif sl_order:
+                            logger.warning("Successfully placed SL order but failed to place TP order for SHORT position")
+                        else:
+                            logger.error("Failed to place both TP and SL orders for SHORT position")
                     else:
-                        logger.error(f"Failed to place TP or SL orders for SHORT position")
+                        logger.error("Entry price is invalid (0 or negative). Cannot place TP or SL orders.")
+                else:
+                    logger.error("Failed to place SHORT order.")
         
         # Display position information if in a position
         if position_side != 'NONE':
@@ -620,12 +1044,153 @@ class BinanceFuturesBot:
             logger.info(f"Current Price: {position['mark_price']}")
             logger.info(f"PnL: ${position['unrealized_pnl']:.2f} ({position['pnl_percent']:.2f}%)")
             logger.info(f"Leverage: {position['leverage']}x")
+            
+            # Calcular y mostrar precios de TP y SL estimados
+            atr_value = latest['atr']
+            if position['side'] == 'LONG':
+                est_tp_price = position['entry_price'] + (atr_value * self.config['atr_multiplier'])
+                est_sl_price = position['entry_price'] - (atr_value * self.config['atr_multiplier'])
+            else:  # SHORT
+                est_tp_price = position['entry_price'] - (atr_value * self.config['atr_multiplier'])
+                est_sl_price = position['entry_price'] + (atr_value * self.config['atr_multiplier'])
+            
+            logger.info(f"Est. TP Price: {est_tp_price:.4f} (${(est_tp_price - position['entry_price']) * position['position_size']:.2f})")
+            logger.info(f"Est. SL Price: {est_sl_price:.4f} (${(est_sl_price - position['entry_price']) * position['position_size']:.2f})")
             logger.info("========================\n")
+    
+    def analyze_risk_reward(self):
+        """Analiza la relación riesgo/recompensa de las operaciones históricas"""
+        trade_history_file = 'trade_history.json'
+        if os.path.exists(trade_history_file):
+            try:
+                with open(trade_history_file, 'r') as f:
+                    trade_history = json.load(f)
+                
+                # Filtrar operaciones cerradas
+                closed_trades = [t for t in trade_history if t['status'] == 'CLOSED']
+                
+                if not closed_trades:
+                    logger.info("No hay operaciones cerradas para analizar")
+                    return
+                
+                # Calcular estadísticas
+                total_trades = len(closed_trades)
+                winning_trades = [t for t in closed_trades if t['pnl'] > 0]
+                losing_trades = [t for t in closed_trades if t['pnl'] <= 0]
+                
+                win_rate = (len(winning_trades) / total_trades) * 100 if total_trades > 0 else 0
+                
+                # Calcular relación riesgo/recompensa promedio
+                avg_win = sum([t['pnl'] for t in winning_trades]) / len(winning_trades) if winning_trades else 0
+                avg_loss = sum([t['pnl'] for t in losing_trades]) / len(losing_trades) if losing_trades else 0
+                
+                avg_risk_reward = abs(avg_win / avg_loss) if avg_loss != 0 else 0
+                
+                # Calcular expectativa matemática
+                expectancy = (win_rate/100 * avg_win) + ((1-win_rate/100) * avg_loss)
+                
+                # Mostrar resultados
+                logger.info("\n===== ANÁLISIS DE RIESGO/RECOMPENSA =====")
+                logger.info(f"Total de operaciones: {total_trades}")
+                logger.info(f"Operaciones ganadoras: {len(winning_trades)} ({win_rate:.1f}%)")
+                logger.info(f"Operaciones perdedoras: {len(losing_trades)} ({100-win_rate:.1f}%)")
+                logger.info(f"Ganancia promedio: ${avg_win:.2f}")
+                logger.info(f"Pérdida promedio: ${avg_loss:.2f}")
+                logger.info(f"Relación riesgo/recompensa promedio: {avg_risk_reward:.2f}")
+                logger.info(f"Expectativa matemática: ${expectancy:.2f}")
+                logger.info("=========================================\n")
+                
+                # Mostrar en consola
+                print("\n===== ANÁLISIS DE RIESGO/RECOMPENSA =====")
+                print(f"Total de operaciones: {total_trades}")
+                print(f"Operaciones ganadoras: {len(winning_trades)} ({win_rate:.1f}%)")
+                print(f"Operaciones perdedoras: {len(losing_trades)} ({100-win_rate:.1f}%)")
+                print(f"Ganancia promedio: ${avg_win:.2f}")
+                print(f"Pérdida promedio: ${avg_loss:.2f}")
+                print(f"Relación riesgo/recompensa promedio: {avg_risk_reward:.2f}")
+                print(f"Expectativa matemática: ${expectancy:.2f}")
+                print("=========================================\n")
+                
+            except Exception as e:
+                logger.error(f"Error analizando riesgo/recompensa: {e}")
+    
+    def monitor_open_positions(self):
+        """Monitorea las posiciones abiertas y muestra información detallada"""
+        position = self.get_position_info()
+        if position['side'] != 'NONE':
+            # Obtener órdenes abiertas
+            open_orders = self.client.futures_get_open_orders(symbol=self.config['symbol'])
+            
+            # Filtrar órdenes de TP y SL
+            tp_orders = [o for o in open_orders if o['type'] == 'TAKE_PROFIT_MARKET']
+            sl_orders = [o for o in open_orders if o['type'] == 'STOP_MARKET']
+            
+            # Mostrar información detallada
+            print("\n===== POSICIÓN ABIERTA =====")
+            print(f"Símbolo: {position['symbol']} | Dirección: {position['side']}")
+            print(f"Tamaño: {position['position_size']} | Entrada: {position['entry_price']}")
+            print(f"Precio actual: {position['mark_price']} | PnL: ${position['unrealized_pnl']:.2f} ({position['pnl_percent']:.2f}%)")
+            
+            if tp_orders:
+                tp_price = float(tp_orders[0]['stopPrice'])
+                tp_distance = abs(tp_price - position['mark_price'])
+                tp_percent = (tp_distance / position['mark_price']) * 100
+                print(f"TP: {tp_price} (Distancia: {tp_distance:.4f} / {tp_percent:.2f}%)")
+            
+            if sl_orders:
+                sl_price = float(sl_orders[0]['stopPrice'])
+                sl_distance = abs(sl_price - position['mark_price'])
+                sl_percent = (sl_distance / position['mark_price']) * 100
+                print(f"SL: {sl_price} (Distancia: {sl_distance:.4f} / {sl_percent:.2f}%)")
+            
+            # Calcular riesgo actual
+            if tp_orders and sl_orders:
+                tp_price = float(tp_orders[0]['stopPrice'])
+                sl_price = float(sl_orders[0]['stopPrice'])
+                
+                if position['side'] == 'LONG':
+                    potential_profit = (tp_price - position['mark_price']) * position['position_size']
+                    potential_loss = (position['mark_price'] - sl_price) * position['position_size']
+                else:
+                    potential_profit = (position['mark_price'] - tp_price) * position['position_size']
+                    potential_loss = (sl_price - position['mark_price']) * position['position_size']
+                
+                risk_reward_current = abs(potential_profit / potential_loss) if potential_loss > 0 else 0
+                print(f"R/R actual: {risk_reward_current:.2f} | Ganancia potencial: ${potential_profit:.2f} | Pérdida potencial: ${potential_loss:.2f}")
+            
+            print("===========================\n")
     
     def run(self):
         """Run the trading bot in a loop"""
         logger.info(f"Starting trading bot for {self.config['symbol']}")
         self.set_leverage()
+        
+        # Variables para estadísticas
+        trades_total = 0
+        trades_won = 0
+        trades_lost = 0
+        profit_total = 0
+        last_analysis_time = time.time()
+        
+        # Cargar historial de trades si existe
+        trade_history_file = 'trade_history.json'
+        if os.path.exists(trade_history_file):
+            try:
+                with open(trade_history_file, 'r') as f:
+                    trade_history = json.load(f)
+                
+                # Calcular estadísticas
+                for trade in trade_history:
+                    if trade['status'] == 'CLOSED':
+                        trades_total += 1
+                        if trade['pnl'] > 0:
+                            trades_won += 1
+                            profit_total += trade['pnl']
+                        else:
+                            trades_lost += 1
+                            profit_total += trade['pnl']
+            except Exception as e:
+                logger.error(f"Error cargando historial de trades: {e}")
         
         try:
             while True:
@@ -636,15 +1201,38 @@ class BinanceFuturesBot:
                 print(f"\n===== BINANCE FUTURES SCALPING BOT =====")
                 print(f"Symbol: {self.config['symbol']} | Timeframe: {self.config.get('timeframe', '1m')}")
                 print(f"Leverage: {self.config['leverage']}x | Position Size: {self.config['position_size_percent']}%")
-                print(f"Stop Loss: {self.config['stop_loss_percent']}% | Take Profit: {self.config['take_profit_min']}-{self.config['take_profit_max']}%")
-                print("=======================================\n")
+                
+                # Mostrar información sobre la relación riesgo/recompensa
+                tp_multiplier = self.config.get('tp_atr_multiplier', self.config['atr_multiplier'] * 1.5)
+                sl_multiplier = self.config['atr_multiplier']
+                risk_reward_ratio = tp_multiplier / sl_multiplier
+                
+                print(f"Stop Loss: ATR x {sl_multiplier} | Take Profit: ATR x {tp_multiplier}")
+                print(f"Relación Riesgo/Recompensa: 1:{risk_reward_ratio:.1f}")
+                print("=======================================")
+                
+                # Mostrar estadísticas
+                if trades_total > 0:
+                    win_rate = (trades_won / trades_total) * 100
+                    print(f"\n--- ESTADÍSTICAS DE TRADING ---")
+                    print(f"Operaciones totales: {trades_total}")
+                    print(f"Ganadas: {trades_won} | Perdidas: {trades_lost}")
+                    print(f"Win Rate: {win_rate:.1f}%")
+                    print(f"Beneficio total: ${profit_total:.2f}")
+                    print("-------------------------------\n")
                 
                 # Execute strategy
                 self.execute_strategy()
                 
+                # Realizar análisis de riesgo/recompensa cada hora
+                current_time = time.time()
+                if current_time - last_analysis_time > 3600:  # 3600 segundos = 1 hora
+                    self.analyze_risk_reward()
+                    last_analysis_time = current_time
+                
                 # Show last update time
-                print(f"\nLast update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                print(f"Waiting 30 seconds for next update...\n")
+                print(f"\nÚltima actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"Esperando 30 segundos para la próxima actualización...\n")
                 
                 # Sleep for 30 seconds (avoids hitting rate limits, still checks frequently on 1m timeframe)
                 time.sleep(30)
@@ -661,11 +1249,11 @@ if __name__ == "__main__":
             'api_key': 'tu_api_key',
             'api_secret': 'tu_api_secret',
             'symbol': 'STXUSDT',
-            'leverage': 5,
-            'stop_loss_percent': 2,
-            'take_profit_min': 1,
-            'take_profit_max': 2,
-            'position_size_percent': 50,
+            'leverage': 10,
+            'stop_loss_percent': 1,
+            'take_profit_min': 2,
+            'take_profit_max': 3,
+            'position_size_percent': 100,
             'sma_period': 200,
             'use_heikin_ashi': True,
             'macd_fast': 12,
@@ -673,7 +1261,8 @@ if __name__ == "__main__":
             'macd_signal': 9,
             'use_volatility_filter': True,
             'atr_period': 14,
-            'atr_multiplier': 2.0,
+            'atr_multiplier': 1.0,
+            'tp_atr_multiplier': 2.0,
             'timeframe': '1m'  # Añadir timeframe por defecto
         }
         with open('config.json', 'w') as f:
