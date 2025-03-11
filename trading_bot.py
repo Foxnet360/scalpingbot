@@ -137,11 +137,23 @@ class BinanceFuturesBot:
             self.config.setdefault('macd_signal', 9)
             self.config.setdefault('use_volatility_filter', True)
             self.config.setdefault('atr_period', 14)
-            self.config.setdefault('atr_multiplier', 1.0)
-            self.config.setdefault('tp_atr_multiplier', 2.0)
+            self.config.setdefault('atr_multiplier', 1.0)  # Para SL
+            
+            # Asegurar que tp_atr_multiplier sea al menos el doble de atr_multiplier
+            min_tp_multiplier = self.config['atr_multiplier'] * 2
+            default_tp_multiplier = max(min_tp_multiplier, 2.0)  # Al menos 2.0 o el doble del SL
+            self.config.setdefault('tp_atr_multiplier', default_tp_multiplier)
+            
             self.config.setdefault('timeframe', '1m')  # Añadir timeframe por defecto
             
+            # Verificar y ajustar la relación riesgo/recompensa si es necesario
+            if self.config['tp_atr_multiplier'] < self.config['atr_multiplier'] * 2:
+                logger.warning(f"La relación riesgo/recompensa configurada ({self.config['tp_atr_multiplier'] / self.config['atr_multiplier']:.2f}) es menor que 2.0")
+                logger.warning("Ajustando tp_atr_multiplier para mantener una relación mínima de 1:2")
+                self.config['tp_atr_multiplier'] = self.config['atr_multiplier'] * 2
+            
             logger.info("Configuration loaded successfully")
+            logger.info(f"Relación riesgo/recompensa: 1:{self.config['tp_atr_multiplier'] / self.config['atr_multiplier']:.2f}")
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")
             # Create a default config
@@ -162,7 +174,7 @@ class BinanceFuturesBot:
                 'use_volatility_filter': True,
                 'atr_period': 14,
                 'atr_multiplier': 1.0,
-                'tp_atr_multiplier': 2.0,
+                'tp_atr_multiplier': 2.0,  # Asegurar relación 1:2
                 'timeframe': '1m'  # Añadir timeframe por defecto
             }
             # Save the default config
@@ -456,9 +468,12 @@ class BinanceFuturesBot:
             # Calculate ATR for the current market
             atr_value = TechnicalIndicators.atr(self.get_historical_data(limit=100), self.config['atr_period']).iloc[-1]
             
-            # Usar un multiplicador específico para TP que sea mayor que el de SL para mejorar la relación riesgo/recompensa
-            # Si no está definido, usar 1.5 veces el multiplicador de ATR estándar
-            tp_multiplier = self.config.get('tp_atr_multiplier', self.config['atr_multiplier'] * 1.5)
+            # Asegurar que la relación riesgo/recompensa sea al menos 1:2
+            sl_multiplier = self.config['atr_multiplier']
+            min_tp_multiplier = sl_multiplier * 2  # Relación mínima 1:2
+            
+            # Usar el multiplicador configurado o el mínimo calculado, el que sea mayor
+            tp_multiplier = max(self.config.get('tp_atr_multiplier', sl_multiplier * 1.5), min_tp_multiplier)
             
             # Calculate the TP price
             tp_price = entry_price + (atr_value * tp_multiplier) if side == "BUY" else entry_price - (atr_value * tp_multiplier)
@@ -475,7 +490,7 @@ class BinanceFuturesBot:
                 return None
             
             # Calcular la relación riesgo/recompensa
-            sl_price = entry_price - (atr_value * self.config['atr_multiplier']) if side == "BUY" else entry_price + (atr_value * self.config['atr_multiplier'])
+            sl_price = entry_price - (atr_value * sl_multiplier) if side == "BUY" else entry_price + (atr_value * sl_multiplier)
             
             if side == "BUY":
                 risk = entry_price - sl_price
@@ -485,6 +500,28 @@ class BinanceFuturesBot:
                 reward = entry_price - tp_price
                 
             risk_reward_ratio = reward / risk if risk > 0 else 0
+            
+            # Verificar que la relación sea al menos 1:2
+            if risk_reward_ratio < 2.0:
+                logger.warning(f"La relación riesgo/recompensa calculada ({risk_reward_ratio:.2f}) es menor que 2.0")
+                logger.warning("Ajustando el precio de TP para mantener una relación mínima de 1:2")
+                
+                # Recalcular el precio de TP para mantener la relación 1:2
+                if side == "BUY":
+                    tp_price = entry_price + (2.0 * (entry_price - sl_price))
+                else:
+                    tp_price = entry_price - (2.0 * (sl_price - entry_price))
+                
+                # Redondear nuevamente al precio correcto
+                tp_price = round(tp_price, price_precision)
+                
+                # Recalcular la relación
+                if side == "BUY":
+                    reward = tp_price - entry_price
+                else:
+                    reward = entry_price - tp_price
+                
+                risk_reward_ratio = reward / risk if risk > 0 else 0
             
             # Log the details for debugging
             logger.info(f"Attempting to place TP order: Side={opposite_side}, Quantity={quantity}, StopPrice={tp_price}, Entry Price={entry_price}")
@@ -1160,6 +1197,50 @@ class BinanceFuturesBot:
             
             print("===========================\n")
     
+    def verify_risk_reward_ratio(self):
+        """Verifica y muestra la relación riesgo/recompensa de las órdenes abiertas"""
+        position = self.get_position_info()
+        if position['side'] != 'NONE':
+            # Obtener órdenes abiertas
+            open_orders = self.client.futures_get_open_orders(symbol=self.config['symbol'])
+            
+            # Filtrar órdenes de TP y SL
+            tp_orders = [o for o in open_orders if o['type'] == 'TAKE_PROFIT_MARKET']
+            sl_orders = [o for o in open_orders if o['type'] == 'STOP_MARKET']
+            
+            if tp_orders and sl_orders:
+                tp_price = float(tp_orders[0]['stopPrice'])
+                sl_price = float(sl_orders[0]['stopPrice'])
+                entry_price = position['entry_price']
+                
+                if position['side'] == 'LONG':
+                    risk = entry_price - sl_price
+                    reward = tp_price - entry_price
+                else:
+                    risk = sl_price - entry_price
+                    reward = entry_price - tp_price
+                
+                risk_reward_ratio = reward / risk if risk > 0 else 0
+                
+                logger.info(f"Relación riesgo/recompensa actual: 1:{risk_reward_ratio:.2f}")
+                
+                # Verificar si la relación es menor que 2.0
+                if risk_reward_ratio < 2.0:
+                    logger.warning(f"La relación riesgo/recompensa actual ({risk_reward_ratio:.2f}) es menor que 2.0")
+                    logger.warning("Considera ajustar manualmente tus órdenes de TP y SL")
+                    
+                    # Calcular el precio de TP ideal para una relación 1:2
+                    if position['side'] == 'LONG':
+                        ideal_tp = entry_price + (2.0 * risk)
+                    else:
+                        ideal_tp = entry_price - (2.0 * risk)
+                    
+                    logger.info(f"Precio de TP ideal para relación 1:2: {ideal_tp:.6f}")
+                
+                return risk_reward_ratio
+            
+        return None
+    
     def run(self):
         """Run the trading bot in a loop"""
         logger.info(f"Starting trading bot for {self.config['symbol']}")
@@ -1171,6 +1252,7 @@ class BinanceFuturesBot:
         trades_lost = 0
         profit_total = 0
         last_analysis_time = time.time()
+        last_rr_check_time = time.time()
         
         # Cargar historial de trades si existe
         trade_history_file = 'trade_history.json'
@@ -1203,13 +1285,21 @@ class BinanceFuturesBot:
                 print(f"Leverage: {self.config['leverage']}x | Position Size: {self.config['position_size_percent']}%")
                 
                 # Mostrar información sobre la relación riesgo/recompensa
-                tp_multiplier = self.config.get('tp_atr_multiplier', self.config['atr_multiplier'] * 1.5)
+                tp_multiplier = self.config.get('tp_atr_multiplier', self.config['atr_multiplier'] * 2)
                 sl_multiplier = self.config['atr_multiplier']
                 risk_reward_ratio = tp_multiplier / sl_multiplier
                 
                 print(f"Stop Loss: ATR x {sl_multiplier} | Take Profit: ATR x {tp_multiplier}")
-                print(f"Relación Riesgo/Recompensa: 1:{risk_reward_ratio:.1f}")
+                print(f"Relación Riesgo/Recompensa configurada: 1:{risk_reward_ratio:.1f}")
                 print("=======================================")
+                
+                # Verificar relación riesgo/recompensa actual cada 5 minutos
+                current_time = time.time()
+                if current_time - last_rr_check_time > 300:  # 300 segundos = 5 minutos
+                    rr_ratio = self.verify_risk_reward_ratio()
+                    if rr_ratio:
+                        print(f"Relación Riesgo/Recompensa actual: 1:{rr_ratio:.1f}")
+                    last_rr_check_time = current_time
                 
                 # Mostrar estadísticas
                 if trades_total > 0:
@@ -1225,7 +1315,6 @@ class BinanceFuturesBot:
                 self.execute_strategy()
                 
                 # Realizar análisis de riesgo/recompensa cada hora
-                current_time = time.time()
                 if current_time - last_analysis_time > 3600:  # 3600 segundos = 1 hora
                     self.analyze_risk_reward()
                     last_analysis_time = current_time

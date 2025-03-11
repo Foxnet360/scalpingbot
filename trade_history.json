@@ -14,5 +14,21 @@
         "pnl_percent": 3.5546938116011173,
         "duration": 33.472532883333336,
         "exit_reason": "MANUAL"
+    },
+    {
+        "timestamp": "2025-03-11 18:02:07",
+        "symbol": "STXUSDT",
+        "side": "SELL",
+        "quantity": 1562.0,
+        "entry_price": 0.6195,
+        "tp_price": "0.6182000",
+        "sl_price": "0.6208000",
+        "leverage": 10,
+        "status": "CLOSED",
+        "exit_price": 0.618,
+        "pnl": 2.343000000000089,
+        "pnl_percent": 2.4271844660195274,
+        "duration": 2.5834568666666664,
+        "exit_reason": "MANUAL"
     }
 ]
