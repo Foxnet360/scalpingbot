@@ -141,7 +141,7 @@ class BinanceFuturesBot:
             
             # Asegurar que tp_atr_multiplier sea al menos el doble de atr_multiplier
             min_tp_multiplier = self.config['atr_multiplier'] * 2
-            default_tp_multiplier = max(min_tp_multiplier, 2.0)  # Al menos 2.0 o el doble del SL
+            default_tp_multiplier = max(min_tp_multiplier, 2)  # Al menos 2.0 o el doble del SL
             self.config.setdefault('tp_atr_multiplier', default_tp_multiplier)
             
             self.config.setdefault('timeframe', '1m')  # Añadir timeframe por defecto
@@ -173,7 +173,7 @@ class BinanceFuturesBot:
                 'macd_signal': 9,
                 'use_volatility_filter': True,
                 'atr_period': 14,
-                'atr_multiplier': 1.0,
+                'atr_multiplier': 1.5,
                 'tp_atr_multiplier': 2.0,  # Asegurar relación 1:2
                 'timeframe': '1m'  # Añadir timeframe por defecto
             }
@@ -684,11 +684,16 @@ class BinanceFuturesBot:
         # Guardar en archivo JSON
         trade_history_file = 'trade_history.json'
         try:
-            if os.path.exists(trade_history_file):
-                with open(trade_history_file, 'r') as f:
-                    trade_history = json.load(f)
-            else:
-                trade_history = []
+            trade_history = []
+            
+            # Si el archivo existe y no está vacío, intentar cargarlo
+            if os.path.exists(trade_history_file) and os.path.getsize(trade_history_file) > 0:
+                try:
+                    with open(trade_history_file, 'r') as f:
+                        trade_history = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning("El archivo trade_history.json está vacío o corrupto. Creando uno nuevo.")
+                    trade_history = []
             
             trade_history.append(trade_info)
             
@@ -710,175 +715,182 @@ class BinanceFuturesBot:
             
             # Cargar historial de trades
             trade_history_file = 'trade_history.json'
-            if os.path.exists(trade_history_file):
-                with open(trade_history_file, 'r') as f:
-                    trade_history = json.load(f)
-                
-                # Buscar trades abiertos
-                for i, trade in enumerate(trade_history):
-                    if trade['status'] == 'OPEN':
-                        # Si ya no tenemos posición pero el trade está marcado como abierto, significa que se cerró
-                        if position['side'] == 'NONE':
-                            # Obtener historial de órdenes recientes para encontrar la orden de cierre
-                            orders = self.client.futures_get_all_orders(symbol=self.config['symbol'], limit=20)
+            trade_history = []
+            
+            # Si el archivo existe y no está vacío, intentar cargarlo
+            if os.path.exists(trade_history_file) and os.path.getsize(trade_history_file) > 0:
+                try:
+                    with open(trade_history_file, 'r') as f:
+                        trade_history = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning("El archivo trade_history.json está vacío o corrupto. Creando uno nuevo.")
+                    trade_history = []
+            
+            # Buscar trades abiertos
+            for i, trade in enumerate(trade_history):
+                if trade['status'] == 'OPEN':
+                    # Si ya no tenemos posición pero el trade está marcado como abierto, significa que se cerró
+                    if position['side'] == 'NONE':
+                        # Obtener historial de órdenes recientes para encontrar la orden de cierre
+                        orders = self.client.futures_get_all_orders(symbol=self.config['symbol'], limit=20)
+                        
+                        # Filtrar órdenes ejecutadas de TP o SL
+                        closed_orders = [order for order in orders if 
+                                        order['status'] == 'FILLED' and 
+                                        (order['type'] == 'TAKE_PROFIT_MARKET' or order['type'] == 'STOP_MARKET')]
+                        
+                        # Ordenar por tiempo de ejecución (más reciente primero)
+                        closed_orders.sort(key=lambda x: x['updateTime'], reverse=True)
+                        
+                        if closed_orders:
+                            # Tomar la orden más reciente que coincida con la dirección del trade
+                            for order in closed_orders:
+                                # Verificar si esta orden cerró nuestra posición
+                                if (trade['side'] == 'BUY' and order['side'] == 'SELL') or \
+                                   (trade['side'] == 'SELL' and order['side'] == 'BUY'):
+                                    
+                                    # Obtener precio de salida
+                                    if 'avgPrice' in order:
+                                        exit_price = float(order['avgPrice'])
+                                    else:
+                                        # Si no hay avgPrice, intentar obtener de otras fuentes
+                                        try:
+                                            # Obtener trades recientes para encontrar el precio de salida
+                                            account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
+                                            # Filtrar por orderId
+                                            matching_trades = [t for t in account_trades if t['orderId'] == order['orderId']]
+                                            if matching_trades:
+                                                exit_price = float(matching_trades[0]['price'])
+                                            else:
+                                                # Si no se encuentra, usar el precio actual
+                                                ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
+                                                exit_price = float(ticker['price'])
+                                                logger.warning(f"No se pudo obtener precio de salida exacto, usando precio actual: {exit_price}")
+                                        except Exception as e:
+                                            logger.error(f"Error obteniendo precio de salida: {e}")
+                                            # Usar el precio de TP o SL como aproximación
+                                            exit_price = float(trade['tp_price']) if order['type'] == 'TAKE_PROFIT_MARKET' else float(trade['sl_price'])
+                                    
+                                    entry_price = trade['entry_price']
+                                    quantity = trade['quantity']
+                                    
+                                    # Calcular PnL
+                                    if trade['side'] == 'BUY':
+                                        pnl = (exit_price - entry_price) * quantity
+                                        pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
+                                    else:
+                                        pnl = (entry_price - exit_price) * quantity
+                                        pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
+                                    
+                                    # Actualizar trade
+                                    trade_history[i]['status'] = 'CLOSED'
+                                    trade_history[i]['exit_price'] = exit_price
+                                    trade_history[i]['pnl'] = pnl
+                                    trade_history[i]['pnl_percent'] = pnl_percent
+                                    trade_history[i]['exit_reason'] = 'TP' if order['type'] == 'TAKE_PROFIT_MARKET' else 'SL'
+                                    
+                                    # Calcular duración
+                                    start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
+                                    end_time = datetime.now()
+                                    duration = (end_time - start_time).total_seconds() / 60  # en minutos
+                                    trade_history[i]['duration'] = duration
+                                    
+                                    # Guardar actualización
+                                    with open(trade_history_file, 'w') as f:
+                                        json.dump(trade_history, f, indent=4)
+                                    
+                                    # Mostrar resumen de la operación
+                                    result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
+                                    logger.warning(f"\n===== OPERACIÓN CERRADA =====")
+                                    logger.warning(f"Símbolo: {trade['symbol']}")
+                                    logger.warning(f"Dirección: {trade['side']}")
+                                    logger.warning(f"Entrada: {entry_price}")
+                                    logger.warning(f"Salida: {exit_price}")
+                                    logger.warning(f"Cantidad: {quantity}")
+                                    logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                    logger.warning(f"Razón de salida: {trade_history[i]['exit_reason']}")
+                                    logger.warning(f"Duración: {duration:.1f} minutos")
+                                    logger.warning(f"Resultado: {result}")
+                                    logger.warning(f"=============================\n")
+                                    
+                                    # Notificar al usuario
+                                    print(f"\n===== OPERACIÓN CERRADA: {result} =====")
+                                    print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
+                                    print(f"Entrada: {entry_price} | Salida: {exit_price}")
+                                    print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                    print(f"Razón: {trade_history[i]['exit_reason']} | Duración: {duration:.1f} min")
+                                    print("=======================================\n")
+                                    
+                                    break
+                        else:
+                            # Si no se encuentran órdenes de cierre, verificar si la posición se cerró manualmente
+                            logger.warning("No se encontraron órdenes de cierre, verificando si la posición se cerró manualmente")
                             
-                            # Filtrar órdenes ejecutadas de TP o SL
-                            closed_orders = [order for order in orders if 
-                                            order['status'] == 'FILLED' and 
-                                            (order['type'] == 'TAKE_PROFIT_MARKET' or order['type'] == 'STOP_MARKET')]
-                            
-                            # Ordenar por tiempo de ejecución (más reciente primero)
-                            closed_orders.sort(key=lambda x: x['updateTime'], reverse=True)
-                            
-                            if closed_orders:
-                                # Tomar la orden más reciente que coincida con la dirección del trade
-                                for order in closed_orders:
-                                    # Verificar si esta orden cerró nuestra posición
-                                    if (trade['side'] == 'BUY' and order['side'] == 'SELL') or \
-                                       (trade['side'] == 'SELL' and order['side'] == 'BUY'):
-                                        
-                                        # Obtener precio de salida
-                                        if 'avgPrice' in order:
-                                            exit_price = float(order['avgPrice'])
-                                        else:
-                                            # Si no hay avgPrice, intentar obtener de otras fuentes
-                                            try:
-                                                # Obtener trades recientes para encontrar el precio de salida
-                                                account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
-                                                # Filtrar por orderId
-                                                matching_trades = [t for t in account_trades if t['orderId'] == order['orderId']]
-                                                if matching_trades:
-                                                    exit_price = float(matching_trades[0]['price'])
-                                                else:
-                                                    # Si no se encuentra, usar el precio actual
-                                                    ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
-                                                    exit_price = float(ticker['price'])
-                                                    logger.warning(f"No se pudo obtener precio de salida exacto, usando precio actual: {exit_price}")
-                                            except Exception as e:
-                                                logger.error(f"Error obteniendo precio de salida: {e}")
-                                                # Usar el precio de TP o SL como aproximación
-                                                exit_price = float(trade['tp_price']) if order['type'] == 'TAKE_PROFIT_MARKET' else float(trade['sl_price'])
-                                        
-                                        entry_price = trade['entry_price']
-                                        quantity = trade['quantity']
-                                        
-                                        # Calcular PnL
-                                        if trade['side'] == 'BUY':
-                                            pnl = (exit_price - entry_price) * quantity
-                                            pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
-                                        else:
-                                            pnl = (entry_price - exit_price) * quantity
-                                            pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
-                                        
-                                        # Actualizar trade
-                                        trade_history[i]['status'] = 'CLOSED'
-                                        trade_history[i]['exit_price'] = exit_price
-                                        trade_history[i]['pnl'] = pnl
-                                        trade_history[i]['pnl_percent'] = pnl_percent
-                                        trade_history[i]['exit_reason'] = 'TP' if order['type'] == 'TAKE_PROFIT_MARKET' else 'SL'
-                                        
-                                        # Calcular duración
-                                        start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
-                                        end_time = datetime.now()
-                                        duration = (end_time - start_time).total_seconds() / 60  # en minutos
-                                        trade_history[i]['duration'] = duration
-                                        
-                                        # Guardar actualización
-                                        with open(trade_history_file, 'w') as f:
-                                            json.dump(trade_history, f, indent=4)
-                                        
-                                        # Mostrar resumen de la operación
-                                        result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
-                                        logger.warning(f"\n===== OPERACIÓN CERRADA =====")
-                                        logger.warning(f"Símbolo: {trade['symbol']}")
-                                        logger.warning(f"Dirección: {trade['side']}")
-                                        logger.warning(f"Entrada: {entry_price}")
-                                        logger.warning(f"Salida: {exit_price}")
-                                        logger.warning(f"Cantidad: {quantity}")
-                                        logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                                        logger.warning(f"Razón de salida: {trade_history[i]['exit_reason']}")
-                                        logger.warning(f"Duración: {duration:.1f} minutos")
-                                        logger.warning(f"Resultado: {result}")
-                                        logger.warning(f"=============================\n")
-                                        
-                                        # Notificar al usuario
-                                        print(f"\n===== OPERACIÓN CERRADA: {result} =====")
-                                        print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
-                                        print(f"Entrada: {entry_price} | Salida: {exit_price}")
-                                        print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                                        print(f"Razón: {trade_history[i]['exit_reason']} | Duración: {duration:.1f} min")
-                                        print("=======================================\n")
-                                        
-                                        break
-                            else:
-                                # Si no se encuentran órdenes de cierre, verificar si la posición se cerró manualmente
-                                logger.warning("No se encontraron órdenes de cierre, verificando si la posición se cerró manualmente")
+                            try:
+                                # Obtener trades recientes
+                                account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
+                                # Ordenar por tiempo (más reciente primero)
+                                account_trades.sort(key=lambda x: x['time'], reverse=True)
                                 
-                                try:
-                                    # Obtener trades recientes
-                                    account_trades = self.client.futures_account_trades(symbol=self.config['symbol'], limit=10)
-                                    # Ordenar por tiempo (más reciente primero)
-                                    account_trades.sort(key=lambda x: x['time'], reverse=True)
+                                # Buscar trades que coincidan con la dirección opuesta a nuestra posición
+                                matching_trades = [t for t in account_trades if 
+                                                  (trade['side'] == 'BUY' and t['side'] == 'SELL') or 
+                                                  (trade['side'] == 'SELL' and t['side'] == 'BUY')]
+                                
+                                if matching_trades:
+                                    # Usar el precio del trade más reciente
+                                    exit_price = float(matching_trades[0]['price'])
+                                    entry_price = trade['entry_price']
+                                    quantity = trade['quantity']
                                     
-                                    # Buscar trades que coincidan con la dirección opuesta a nuestra posición
-                                    matching_trades = [t for t in account_trades if 
-                                                      (trade['side'] == 'BUY' and t['side'] == 'SELL') or 
-                                                      (trade['side'] == 'SELL' and t['side'] == 'BUY')]
+                                    # Calcular PnL
+                                    if trade['side'] == 'BUY':
+                                        pnl = (exit_price - entry_price) * quantity
+                                        pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
+                                    else:
+                                        pnl = (entry_price - exit_price) * quantity
+                                        pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
                                     
-                                    if matching_trades:
-                                        # Usar el precio del trade más reciente
-                                        exit_price = float(matching_trades[0]['price'])
-                                        entry_price = trade['entry_price']
-                                        quantity = trade['quantity']
-                                        
-                                        # Calcular PnL
-                                        if trade['side'] == 'BUY':
-                                            pnl = (exit_price - entry_price) * quantity
-                                            pnl_percent = ((exit_price / entry_price) - 1) * 100 * self.config['leverage']
-                                        else:
-                                            pnl = (entry_price - exit_price) * quantity
-                                            pnl_percent = ((entry_price / exit_price) - 1) * 100 * self.config['leverage']
-                                        
-                                        # Actualizar trade
-                                        trade_history[i]['status'] = 'CLOSED'
-                                        trade_history[i]['exit_price'] = exit_price
-                                        trade_history[i]['pnl'] = pnl
-                                        trade_history[i]['pnl_percent'] = pnl_percent
-                                        trade_history[i]['exit_reason'] = 'MANUAL'
-                                        
-                                        # Calcular duración
-                                        start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
-                                        end_time = datetime.now()
-                                        duration = (end_time - start_time).total_seconds() / 60  # en minutos
-                                        trade_history[i]['duration'] = duration
-                                        
-                                        # Guardar actualización
-                                        with open(trade_history_file, 'w') as f:
-                                            json.dump(trade_history, f, indent=4)
-                                        
-                                        # Mostrar resumen de la operación
-                                        result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
-                                        logger.warning(f"\n===== OPERACIÓN CERRADA MANUALMENTE =====")
-                                        logger.warning(f"Símbolo: {trade['symbol']}")
-                                        logger.warning(f"Dirección: {trade['side']}")
-                                        logger.warning(f"Entrada: {entry_price}")
-                                        logger.warning(f"Salida: {exit_price}")
-                                        logger.warning(f"Cantidad: {quantity}")
-                                        logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                                        logger.warning(f"Duración: {duration:.1f} minutos")
-                                        logger.warning(f"Resultado: {result}")
-                                        logger.warning(f"=============================\n")
-                                        
-                                        # Notificar al usuario
-                                        print(f"\n===== OPERACIÓN CERRADA MANUALMENTE: {result} =====")
-                                        print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
-                                        print(f"Entrada: {entry_price} | Salida: {exit_price}")
-                                        print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
-                                        print(f"Duración: {duration:.1f} min")
-                                        print("=======================================\n")
-                                except Exception as e:
-                                    logger.error(f"Error verificando cierre manual: {e}")
+                                    # Actualizar trade
+                                    trade_history[i]['status'] = 'CLOSED'
+                                    trade_history[i]['exit_price'] = exit_price
+                                    trade_history[i]['pnl'] = pnl
+                                    trade_history[i]['pnl_percent'] = pnl_percent
+                                    trade_history[i]['exit_reason'] = 'MANUAL'
                                     
+                                    # Calcular duración
+                                    start_time = datetime.strptime(trade['timestamp'], '%Y-%m-%d %H:%M:%S')
+                                    end_time = datetime.now()
+                                    duration = (end_time - start_time).total_seconds() / 60  # en minutos
+                                    trade_history[i]['duration'] = duration
+                                    
+                                    # Guardar actualización
+                                    with open(trade_history_file, 'w') as f:
+                                        json.dump(trade_history, f, indent=4)
+                                    
+                                    # Mostrar resumen de la operación
+                                    result = "GANANCIA" if pnl > 0 else "PÉRDIDA"
+                                    logger.warning(f"\n===== OPERACIÓN CERRADA MANUALMENTE =====")
+                                    logger.warning(f"Símbolo: {trade['symbol']}")
+                                    logger.warning(f"Dirección: {trade['side']}")
+                                    logger.warning(f"Entrada: {entry_price}")
+                                    logger.warning(f"Salida: {exit_price}")
+                                    logger.warning(f"Cantidad: {quantity}")
+                                    logger.warning(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                    logger.warning(f"Duración: {duration:.1f} minutos")
+                                    logger.warning(f"Resultado: {result}")
+                                    logger.warning(f"=============================\n")
+                                    
+                                    # Notificar al usuario
+                                    print(f"\n===== OPERACIÓN CERRADA MANUALMENTE: {result} =====")
+                                    print(f"Símbolo: {trade['symbol']} | Dirección: {trade['side']}")
+                                    print(f"Entrada: {entry_price} | Salida: {exit_price}")
+                                    print(f"PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+                                    print(f"Duración: {duration:.1f} min")
+                                    print("=======================================\n")
+                            except Exception as e:
+                                logger.error(f"Error verificando cierre manual: {e}")
+                                
         except Exception as e:
             logger.error(f"Error al verificar posiciones cerradas: {e}")
     

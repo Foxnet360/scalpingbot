@@ -1,34 +1,18 @@
 [
     {
-        "timestamp": "2025-03-11 17:22:21",
+        "timestamp": "2025-03-13 15:10:51",
         "symbol": "STXUSDT",
         "side": "SELL",
-        "quantity": 1554.0,
-        "entry_price": 0.6211,
-        "tp_price": "0.6191000",
-        "sl_price": "0.6231000",
+        "quantity": 1585.0,
+        "entry_price": 0.6049,
+        "tp_price": "0.6020000",
+        "sl_price": "0.6063000",
         "leverage": 10,
-        "status": "CLOSED",
-        "exit_price": 0.6189,
-        "pnl": 3.4187999999999685,
-        "pnl_percent": 3.5546938116011173,
-        "duration": 33.472532883333336,
-        "exit_reason": "MANUAL"
-    },
-    {
-        "timestamp": "2025-03-11 18:02:07",
-        "symbol": "STXUSDT",
-        "side": "SELL",
-        "quantity": 1562.0,
-        "entry_price": 0.6195,
-        "tp_price": "0.6182000",
-        "sl_price": "0.6208000",
-        "leverage": 10,
-        "status": "CLOSED",
-        "exit_price": 0.618,
-        "pnl": 2.343000000000089,
-        "pnl_percent": 2.4271844660195274,
-        "duration": 2.5834568666666664,
-        "exit_reason": "MANUAL"
+        "status": "OPEN",
+        "exit_price": null,
+        "pnl": null,
+        "pnl_percent": null,
+        "duration": null,
+        "exit_reason": null
     }
 ]
