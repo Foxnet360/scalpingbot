@@ -92,6 +92,23 @@ class BinanceFuturesBot:
             self.load_config(config_path)
             self.client = Client(self.config['api_key'], self.config['api_secret'])
             
+            # Detectar la moneda base del símbolo
+            symbol = self.config['symbol']
+            if symbol.endswith('USDT'):
+                self.quote_asset = 'USDT'
+            elif symbol.endswith('USDC'):
+                self.quote_asset = 'USDC'
+            elif symbol.endswith('BUSD'):
+                self.quote_asset = 'BUSD'
+            else:
+                # Intentar detectar automáticamente
+                if len(symbol) > 3:
+                    self.quote_asset = symbol[-4:] if symbol[-4:] in ['USDT', 'USDC', 'BUSD'] else symbol[-3:]
+                else:
+                    self.quote_asset = 'USDT'  # Valor por defecto
+            
+            logger.info(f"Moneda base detectada: {self.quote_asset} para el símbolo {symbol}")
+            
             # Set leverage immediately after initialization
             try:
                 self.client.futures_change_leverage(
@@ -324,16 +341,36 @@ class BinanceFuturesBot:
         
         return analysis_df
     
-    def get_account_balance(self):
-        """Get futures account balance"""
+    def get_account_balance(self, asset=None):
+        """Get futures account balance for a specific asset"""
         try:
+            # Usar la moneda base detectada si no se especifica
+            if asset is None:
+                asset = getattr(self, 'quote_asset', 'USDT')
+            
+            logger.info(f"Buscando balance para el activo: {asset}")
             futures_account = self.client.futures_account()
-            for asset in futures_account['assets']:
-                if asset['asset'] == 'USDT':
-                    return float(asset['availableBalance'])
+            
+            # Buscar el balance para el activo especificado
+            for a in futures_account['assets']:
+                if a['asset'] == asset:
+                    balance = float(a['availableBalance'])
+                    logger.info(f"Balance disponible en {asset}: {balance}")
+                    return balance
+            
+            # Si no se encuentra el activo específico, intentar con USDT como fallback
+            if asset != 'USDT':
+                logger.warning(f"No se encontró balance para {asset}, intentando con USDT")
+                for a in futures_account['assets']:
+                    if a['asset'] == 'USDT':
+                        balance = float(a['availableBalance'])
+                        logger.info(f"Balance disponible en USDT (fallback): {balance}")
+                        return balance
+            
+            logger.warning(f"No se encontró balance para {asset}")
             return 0
         except BinanceAPIException as e:
-            logger.error(f"Error getting account balance: {e}")
+            logger.error(f"Error obteniendo balance de la cuenta: {e}")
             return 0
     
     def get_position_info(self):
@@ -390,33 +427,93 @@ class BinanceFuturesBot:
     
     def calculate_position_size(self):
         """Calculate position size based on available balance and risk settings"""
-        balance = self.get_account_balance()
-        position_size_usdt = balance * (self.config['position_size_percent'] / 100)
-        
-        # Get current price
-        ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
-        current_price = float(ticker['price'])
-        
-        # Calculate quantity in base asset
-        quantity = position_size_usdt / current_price
-        
-        # Get symbol info for precision
-        exchange_info = self.client.futures_exchange_info()
-        symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
-        
-        if symbol_info:
-            # Find the quantity precision
-            quantity_precision = 0
-            for filter in symbol_info['filters']:
-                if filter['filterType'] == 'LOT_SIZE':
-                    step_size = float(filter['stepSize'])
-                    quantity_precision = len(str(step_size).rstrip('0').split('.')[1]) if '.' in str(step_size) else 0
+        try:
+            # Determinar qué moneda base usar para el cálculo del balance
+            quote_asset = self.config['symbol'][-4:] if self.config['symbol'].endswith(('USDT', 'USDC', 'BUSD')) else self.config['symbol'][-3:]
+            
+            # Obtener el balance de la cuenta
+            futures_account = self.client.futures_account()
+            balance = 0
+            
+            # Buscar el balance correspondiente a la moneda base (USDT, USDC, etc.)
+            for asset in futures_account['assets']:
+                if asset['asset'] == quote_asset:
+                    balance = float(asset['availableBalance'])
+                    logger.info(f"Balance disponible en {quote_asset}: {balance}")
                     break
             
-            # Round quantity to the correct precision
-            quantity = round(quantity, quantity_precision)
-        
-        return quantity
+            # Si no se encuentra balance específico, intentar con USDT como fallback
+            if balance == 0 and quote_asset != 'USDT':
+                for asset in futures_account['assets']:
+                    if asset['asset'] == 'USDT':
+                        balance = float(asset['availableBalance'])
+                        logger.info(f"No se encontró balance en {quote_asset}, usando balance USDT: {balance}")
+                        break
+            
+            # Verificar si tenemos balance
+            if balance <= 0:
+                logger.error(f"Balance disponible es cero o no se pudo determinar para {quote_asset}")
+                return 0
+            
+            # Calcular el tamaño de la posición en USDT/USDC
+            position_size_usdt = balance * (self.config['position_size_percent'] / 100)
+            logger.info(f"Tamaño de posición calculado en {quote_asset}: {position_size_usdt}")
+            
+            # Obtener el precio actual
+            ticker = self.client.futures_symbol_ticker(symbol=self.config['symbol'])
+            current_price = float(ticker['price'])
+            logger.info(f"Precio actual de {self.config['symbol']}: {current_price}")
+            
+            # Calcular la cantidad en el activo base
+            quantity = position_size_usdt / current_price
+            logger.info(f"Cantidad calculada antes de redondeo: {quantity}")
+            
+            # Verificar que la cantidad sea mayor que cero
+            if quantity <= 0:
+                logger.error(f"La cantidad calculada es cero o negativa: {quantity}")
+                return 0
+            
+            # Obtener información del símbolo para la precisión
+            exchange_info = self.client.futures_exchange_info()
+            symbol_info = next((s for s in exchange_info['symbols'] if s['symbol'] == self.config['symbol']), None)
+            
+            if symbol_info:
+                # Encontrar la precisión de la cantidad
+                quantity_precision = 0
+                min_qty = 0
+                
+                for filter in symbol_info['filters']:
+                    if filter['filterType'] == 'LOT_SIZE':
+                        step_size = float(filter['stepSize'])
+                        min_qty = float(filter['minQty'])
+                        quantity_precision = len(str(step_size).rstrip('0').split('.')[1]) if '.' in str(step_size) else 0
+                        break
+                
+                # Redondear la cantidad a la precisión correcta
+                quantity = round(quantity, quantity_precision)
+                
+                # Asegurarse de que la cantidad sea al menos la cantidad mínima
+                if quantity < min_qty:
+                    logger.warning(f"La cantidad calculada ({quantity}) es menor que la cantidad mínima ({min_qty}). Ajustando a la cantidad mínima.")
+                    quantity = min_qty
+                
+                logger.info(f"Cantidad final después de redondeo y ajustes: {quantity}")
+            else:
+                logger.warning(f"No se pudo obtener información del símbolo {self.config['symbol']}. Usando precisión por defecto.")
+                quantity = round(quantity, 2)  # Precisión por defecto
+            
+            # Verificación final para asegurar que la cantidad sea válida
+            if quantity <= 0:
+                logger.error(f"La cantidad final es cero o negativa después de los ajustes: {quantity}")
+                # Usar un valor mínimo seguro como fallback
+                quantity = 0.001
+                logger.warning(f"Usando cantidad mínima de fallback: {quantity}")
+            
+            return quantity
+        except Exception as e:
+            logger.error(f"Error calculando el tamaño de la posición: {e}")
+            # Retornar un valor mínimo seguro en caso de error
+            return 0.001
     
     def place_order(self, side, quantity, order_type="MARKET"):
         """
@@ -933,6 +1030,13 @@ class BinanceFuturesBot:
                 logger.info("🟢 LONG Entry Signal detected")
                 quantity = self.calculate_position_size()
                 
+                # Verificar que la cantidad sea válida
+                if quantity <= 0:
+                    logger.error(f"Cantidad calculada no válida: {quantity}. No se puede colocar orden LONG.")
+                    return
+                
+                logger.info(f"Intentando colocar orden LONG con cantidad: {quantity}")
+                
                 # Open long position
                 order = self.place_order("BUY", quantity)
                 if order:
@@ -1009,6 +1113,13 @@ class BinanceFuturesBot:
             elif short_signal:
                 logger.info("🟡 SHORT Entry Signal detected")
                 quantity = self.calculate_position_size()
+                
+                # Verificar que la cantidad sea válida
+                if quantity <= 0:
+                    logger.error(f"Cantidad calculada no válida: {quantity}. No se puede colocar orden SHORT.")
+                    return
+                
+                logger.info(f"Intentando colocar orden SHORT con cantidad: {quantity}")
                 
                 # Open short position
                 order = self.place_order("SELL", quantity)
