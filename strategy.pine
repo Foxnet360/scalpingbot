@@ -1,0 +1,136 @@
+//@version=5
+strategy("Scalping Bot Strategy", overlay=true, margin_long=100, margin_short=100, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// Parámetros configurables
+var int atr_period = input.int(14, "Período ATR", minval=1)
+var float atr_multiplier = input.float(1.0, "Multiplicador ATR para SL", minval=0.1, step=0.1)
+var float tp_atr_multiplier = input.float(2.0, "Multiplicador ATR para TP", minval=0.1, step=0.1)
+var int sma_period = input.int(200, "Período SMA", minval=1)
+var int macd_fast = input.int(12, "MACD Fast", minval=1)
+var int macd_slow = input.int(26, "MACD Slow", minval=1)
+var int macd_signal = input.int(9, "MACD Signal", minval=1)
+var bool use_heikin_ashi = input.bool(true, "Usar Heikin Ashi")
+var bool use_volatility_filter = input.bool(true, "Usar Filtro de Volatilidad")
+var bool sl_as_limit = input.bool(true, "SL como órdenes LIMIT", tooltip="Usar órdenes LIMIT para Stop Loss en lugar de STOP_MARKET")
+
+// Parámetros adicionales de la estrategia
+var int slippage = input.int(1, "Slippage (puntos)", minval=0)
+var bool use_date_filter = input.bool(false, "Filtrar por fechas")
+var int start_year = input.int(2020, "Año inicio", minval=2010, maxval=2030)
+var int start_month = input.int(1, "Mes inicio", minval=1, maxval=12)
+var int start_day = input.int(1, "Día inicio", minval=1, maxval=31)
+var int end_year = input.int(2025, "Año fin", minval=2010, maxval=2030)
+var int end_month = input.int(12, "Mes fin", minval=1, maxval=12)
+var int end_day = input.int(31, "Día fin", minval=1, maxval=31)
+
+// Filtro de fechas
+fecha_inicio = timestamp(start_year, start_month, start_day, 0, 0)
+fecha_fin = timestamp(end_year, end_month, end_day, 23, 59)
+en_rango_fecha = not use_date_filter or (time >= fecha_inicio and time <= fecha_fin)
+
+// Calcular Heikin Ashi
+ha_close = (open + high + low + close) / 4
+ha_open = float(na)
+ha_open := na(ha_open[1]) ? open : (ha_open[1] + ha_close[1]) / 2
+ha_high = math.max(high, math.max(open, close))
+ha_low = math.min(low, math.min(open, close))
+
+// Usar precios Heikin Ashi o normales según configuración
+price_series = use_heikin_ashi ? ha_close : close
+is_bullish = use_heikin_ashi ? (ha_close > ha_open) : (close > open)
+is_bearish = use_heikin_ashi ? (ha_close < ha_open) : (close < open)
+
+// Calcular SMA
+sma200 = ta.sma(price_series, sma_period)
+
+// Calcular MACD
+[macd_line, signal_line, hist] = ta.macd(price_series, macd_fast, macd_slow, macd_signal)
+
+// Calcular ATR
+atr = ta.atr(atr_period)
+avg_atr = ta.sma(atr, 100)
+
+// Señales de cruce MACD
+macd_bull_cross = ta.crossover(macd_line, signal_line)
+macd_bear_cross = ta.crossunder(macd_line, signal_line)
+
+// Filtro de volatilidad
+volatility_ok = not use_volatility_filter or atr <= avg_atr * atr_multiplier
+
+// Señales finales
+long_signal = price_series > sma200 and macd_bull_cross and is_bullish and volatility_ok and en_rango_fecha
+short_signal = price_series < sma200 and macd_bear_cross and is_bearish and volatility_ok and en_rango_fecha
+
+// Calcular precios de TP y SL
+long_tp = close + (atr * tp_atr_multiplier)
+long_sl = close - (atr * atr_multiplier)
+
+short_tp = close - (atr * tp_atr_multiplier)
+short_sl = close + (atr * atr_multiplier)
+
+// Dibujar señales
+plotshape(long_signal, title="Señal LONG", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(short_signal, title="Señal SHORT", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+// Dibujar SMA
+plot(sma200, title="SMA 200", color=color.blue, linewidth=2)
+
+// Dibujar niveles de TP y SL cuando hay señales
+plot(long_signal ? long_tp : na, title="TP LONG", color=color.green, style=plot.style_circles)
+plot(long_signal ? long_sl : na, title="SL LONG", color=color.red, style=plot.style_circles)
+plot(short_signal ? short_tp : na, title="TP SHORT", color=color.green, style=plot.style_circles)
+plot(short_signal ? short_sl : na, title="SL SHORT", color=color.red, style=plot.style_circles)
+
+// Ejecutar estrategia de trading
+if (long_signal)
+    entry_id = "Long"
+    strategy.entry(entry_id, strategy.long)
+    
+    // Usar órdenes limit para TP y SL
+    strategy.exit("Exit Long", entry_id, limit=long_tp, stop=sl_as_limit ? na : long_sl)
+    
+    // Si usamos SL como LIMIT, agregamos una orden LIMIT separada
+    if sl_as_limit
+        strategy.order(entry_id + "_SL", strategy.short, when=strategy.position_size > 0, limit=long_sl, qty=strategy.position_size, comment="SL_LIMIT")
+
+if (short_signal)
+    entry_id = "Short"
+    strategy.entry(entry_id, strategy.short)
+    
+    // Usar órdenes limit para TP y SL
+    strategy.exit("Exit Short", entry_id, limit=short_tp, stop=sl_as_limit ? na : short_sl)
+    
+    // Si usamos SL como LIMIT, agregamos una orden LIMIT separada
+    if sl_as_limit
+        strategy.order(entry_id + "_SL", strategy.long, when=strategy.position_size < 0, limit=short_sl, qty=-strategy.position_size, comment="SL_LIMIT")
+
+// Mostrar información en la tabla
+var table_position = position.top_right
+var table_size = size.small
+
+// Crear la tabla una sola vez
+var table info_table = table.new(table_position, 2, 7, bgcolor = color.rgb(0, 0, 0, 80))
+
+// Configurar los encabezados de tabla (solo una vez)
+if barstate.isfirst
+    table.cell(info_table, 0, 0, "Indicador", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 0, "Valor", text_color=color.white, text_size=table_size)
+
+// Actualizar datos en cada barra
+if barstate.islast
+    // Actualizar los valores de la tabla
+    table.cell(info_table, 0, 1, "ATR", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 1, str.tostring(atr, "#.####"), text_color=color.white, text_size=table_size)
+    table.cell(info_table, 0, 2, "Volatilidad OK", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 2, volatility_ok ? "Sí" : "No", text_color=volatility_ok ? color.green : color.red, text_size=table_size)
+    table.cell(info_table, 0, 3, "R/R Ratio", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 3, str.tostring(tp_atr_multiplier / atr_multiplier, "#.##"), text_color=color.white, text_size=table_size)
+    table.cell(info_table, 0, 4, "Operaciones", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 4, str.tostring(strategy.openprofit > 0 ? "LONG" : strategy.openprofit < 0 ? "SHORT" : "NONE"), 
+               text_color=strategy.openprofit > 0 ? color.green : strategy.openprofit < 0 ? color.red : color.white, text_size=table_size)
+    table.cell(info_table, 0, 5, "P&L", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 5, str.tostring(strategy.netprofit, "#.##") + " (" + str.tostring(strategy.netprofit / strategy.initial_capital * 100, "#.##") + "%)", 
+               text_color=strategy.netprofit >= 0 ? color.green : color.red, text_size=table_size)
+    table.cell(info_table, 0, 6, "Tipo SL", text_color=color.white, text_size=table_size)
+    table.cell(info_table, 1, 6, sl_as_limit ? "LIMIT" : "STOP", 
+               text_color=color.white, text_size=table_size) 

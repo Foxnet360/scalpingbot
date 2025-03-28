@@ -621,22 +621,22 @@ class BinanceFuturesBot:
                 risk_reward_ratio = reward / risk if risk > 0 else 0
             
             # Log the details for debugging
-            logger.info(f"Attempting to place TP order: Side={opposite_side}, Quantity={quantity}, StopPrice={tp_price}, Entry Price={entry_price}")
+            logger.info(f"Attempting to place TP order: Side={opposite_side}, Quantity={quantity}, Price={tp_price}, Entry Price={entry_price}")
             logger.info(f"TP Distance: {abs(tp_price - entry_price):.4f} ({abs(tp_price/entry_price - 1) * 100:.2f}%)")
             logger.info(f"Risk/Reward Ratio: {risk_reward_ratio:.2f}")
             
-            # Create the TP order
+            # Crear la orden TP como LIMIT
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="TAKE_PROFIT_MARKET",
+                type="LIMIT",
+                timeInForce="GTC",  # Good Till Cancel
                 quantity=quantity,
-                stopPrice=tp_price,
-                workingType="MARK_PRICE",
+                price=tp_price,
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed take profit order at {tp_price} (R/R: {risk_reward_ratio:.2f})")
+            logger.warning(f"Placed take profit LIMIT order at {tp_price} (R/R: {risk_reward_ratio:.2f})")
             return order
         except Exception as e:
             logger.error(f"Error placing take profit order: {str(e)}")
@@ -660,25 +660,25 @@ class BinanceFuturesBot:
                             
                             logger.info(f"Retrying TP order with corrected precision: {correct_precision}, Price: {tp_price}")
                             
-                            # Create the TP order with corrected precision
+                            # Crear la orden TP como LIMIT con la precisión corregida
                             order = self.client.futures_create_order(
                                 symbol=self.config['symbol'],
                                 side=opposite_side,
-                                type="TAKE_PROFIT_MARKET",
+                                type="LIMIT",
+                                timeInForce="GTC",  # Good Till Cancel
                                 quantity=quantity,
-                                stopPrice=tp_price,
-                                workingType="MARK_PRICE",
+                                price=tp_price,
                                 reduceOnly=True
                             )
                             
-                            logger.warning(f"Placed take profit order at {tp_price} with corrected precision")
+                            logger.warning(f"Placed take profit LIMIT order at {tp_price} with corrected precision")
                             return order
                 except Exception as retry_error:
                     logger.error(f"Error retrying take profit order with corrected precision: {str(retry_error)}")
             return None
     
     def place_stop_loss_order(self, side, quantity, entry_price):
-        """Place a stop loss order based on ATR"""
+        """Place a stop loss order as LIMIT order"""
         try:
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
@@ -705,20 +705,20 @@ class BinanceFuturesBot:
                 return None
             
             # Log the details for debugging
-            logger.info(f"Attempting to place SL order: Side={opposite_side}, Quantity={quantity}, StopPrice={sl_price}, Entry Price={entry_price}")
+            logger.info(f"Attempting to place SL LIMIT order: Side={opposite_side}, Quantity={quantity}, Price={sl_price}, Entry Price={entry_price}")
             
-            # Crear la orden de SL
+            # Crear la orden de SL como LIMIT en lugar de STOP_MARKET
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="STOP_MARKET",
+                type="LIMIT",
+                timeInForce="GTC",  # Good Till Cancel
                 quantity=quantity,
-                stopPrice=sl_price,
-                workingType="MARK_PRICE",
+                price=sl_price,
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed stop loss order at {sl_price}")
+            logger.warning(f"Placed stop loss LIMIT order at {sl_price}")
             return order
         except Exception as e:
             logger.error(f"Error placing stop loss order: {str(e)}")
@@ -742,18 +742,18 @@ class BinanceFuturesBot:
                             
                             logger.info(f"Retrying SL order with corrected precision: {correct_precision}, Price: {sl_price}")
                             
-                            # Create the SL order with corrected precision
+                            # Create the SL order with corrected precision as LIMIT
                             order = self.client.futures_create_order(
                                 symbol=self.config['symbol'],
                                 side=opposite_side,
-                                type="STOP_MARKET",
+                                type="LIMIT",
+                                timeInForce="GTC",
                                 quantity=quantity,
-                                stopPrice=sl_price,
-                                workingType="MARK_PRICE",
+                                price=sl_price,
                                 reduceOnly=True
                             )
                             
-                            logger.warning(f"Placed stop loss order at {sl_price} with corrected precision")
+                            logger.warning(f"Placed stop loss LIMIT order at {sl_price} with corrected precision")
                             return order
                 except Exception as retry_error:
                     logger.error(f"Error retrying stop loss order with corrected precision: {str(retry_error)}")
