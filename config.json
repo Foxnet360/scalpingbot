@@ -1,0 +1,28 @@
+{
+    "api_key": "",
+    "api_secret": "",
+    "symbol": "ETHUSDC",
+    "leverage": 10,
+    "position_size_percent": 100,
+    "timeframe": "1m",
+
+    "strategy_parameters": {
+        "use_heikin_ashi": true,
+        "sma_period": 200,
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_signal": 9,
+        "atr_period": 14
+    },
+
+    "risk_management": {
+        "sl_atr_multiplier": 1.5,
+        "rr_ratio": 2.2
+    },
+
+    "volatility_filter": {
+        "use_filter": true,
+        "avg_atr_period": 100,
+        "max_atr_multiplier": 1.5
+    }
+}
