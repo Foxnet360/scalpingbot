@@ -625,18 +625,17 @@ class BinanceFuturesBot:
             logger.info(f"TP Distance: {abs(tp_price - entry_price):.4f} ({abs(tp_price/entry_price - 1) * 100:.2f}%)")
             logger.info(f"Risk/Reward Ratio: {risk_reward_ratio:.2f}")
             
-            # Crear la orden TP como LIMIT
+            # Crear la orden TP como TAKE_PROFIT_MARKET
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="LIMIT",
-                timeInForce="GTC",  # Good Till Cancel
+                type="TAKE_PROFIT_MARKET",
                 quantity=quantity,
-                price=tp_price,
+                stopPrice=tp_price,
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed take profit LIMIT order at {tp_price} (R/R: {risk_reward_ratio:.2f})")
+            logger.warning(f"Placed take profit MARKET order at {tp_price} (R/R: {risk_reward_ratio:.2f})")
             return order
         except Exception as e:
             logger.error(f"Error placing take profit order: {str(e)}")
@@ -660,18 +659,17 @@ class BinanceFuturesBot:
                             
                             logger.info(f"Retrying TP order with corrected precision: {correct_precision}, Price: {tp_price}")
                             
-                            # Crear la orden TP como LIMIT con la precisión corregida
+                            # Crear la orden TP como TAKE_PROFIT_MARKET con la precisión corregida
                             order = self.client.futures_create_order(
                                 symbol=self.config['symbol'],
                                 side=opposite_side,
-                                type="LIMIT",
-                                timeInForce="GTC",  # Good Till Cancel
+                                type="TAKE_PROFIT_MARKET",
                                 quantity=quantity,
-                                price=tp_price,
+                                stopPrice=tp_price,
                                 reduceOnly=True
                             )
                             
-                            logger.warning(f"Placed take profit LIMIT order at {tp_price} with corrected precision")
+                            logger.warning(f"Placed take profit MARKET order at {tp_price} with corrected precision")
                             return order
                 except Exception as retry_error:
                     logger.error(f"Error retrying take profit order with corrected precision: {str(retry_error)}")
@@ -707,18 +705,17 @@ class BinanceFuturesBot:
             # Log the details for debugging
             logger.info(f"Attempting to place SL LIMIT order: Side={opposite_side}, Quantity={quantity}, Price={sl_price}, Entry Price={entry_price}")
             
-            # Crear la orden de SL como LIMIT en lugar de STOP_MARKET
+            # Crear la orden de SL como STOP_MARKET
             order = self.client.futures_create_order(
                 symbol=self.config['symbol'],
                 side=opposite_side,
-                type="LIMIT",
-                timeInForce="GTC",  # Good Till Cancel
+                type="STOP_MARKET",
                 quantity=quantity,
-                price=sl_price,
+                stopPrice=sl_price,
                 reduceOnly=True
             )
             
-            logger.warning(f"Placed stop loss LIMIT order at {sl_price}")
+            logger.warning(f"Placed stop loss MARKET order at {sl_price}")
             return order
         except Exception as e:
             logger.error(f"Error placing stop loss order: {str(e)}")
@@ -742,18 +739,17 @@ class BinanceFuturesBot:
                             
                             logger.info(f"Retrying SL order with corrected precision: {correct_precision}, Price: {sl_price}")
                             
-                            # Create the SL order with corrected precision as LIMIT
+                            # Create the SL order with corrected precision as STOP_MARKET
                             order = self.client.futures_create_order(
                                 symbol=self.config['symbol'],
                                 side=opposite_side,
-                                type="LIMIT",
-                                timeInForce="GTC",
+                                type="STOP_MARKET",
                                 quantity=quantity,
-                                price=sl_price,
+                                stopPrice=sl_price,
                                 reduceOnly=True
                             )
                             
-                            logger.warning(f"Placed stop loss LIMIT order at {sl_price} with corrected precision")
+                            logger.warning(f"Placed stop loss MARKET order at {sl_price} with corrected precision")
                             return order
                 except Exception as retry_error:
                     logger.error(f"Error retrying stop loss order with corrected precision: {str(retry_error)}")
